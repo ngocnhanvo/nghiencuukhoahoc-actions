@@ -53,4 +53,4 @@ jobs:
             done
           fi
           printf '\nNo secret values are displayed. This diagnostic did not write to the source or destination code repositories.\n' >> "$report"
-          gh api "repos/${GITHUB_REPOSITORY}/issues/${ISSUE_NUMBER}/comments" -X POST -f body=@"$report" >/dev/null
+          gh api "repos/${GITHUB_REPOSITORY}/issues/${ISSUE_NUMBER}/comments" -X POST -F body=@"$report" >/dev/null
