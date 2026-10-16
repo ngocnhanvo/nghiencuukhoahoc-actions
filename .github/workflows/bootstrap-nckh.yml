@@ -1,0 +1,160 @@
+name: Bootstrap NCKH codebase from Blue Sea
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/bootstrap-nckh.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: bootstrap-nckh-once
+  cancel-in-progress: false
+
+jobs:
+  import:
+    name: Import source into independent repositories
+    runs-on: ubuntu-latest
+    timeout-minutes: 55
+    env:
+      SOURCE_REPO_PAT: ${{ secrets.SOURCE_REPO_PAT }}
+      ACTIONS_PUSH_TOKEN: ${{ github.token }}
+      GIT_TERMINAL_PROMPT: '0'
+    steps:
+      - name: Checkout this (destination) Actions repository
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: One-way import (source repositories stay unchanged)
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          if [ -z "$SOURCE_REPO_PAT" ]; then
+            echo "::error::SOURCE_REPO_PAT is missing on the destination Actions repository. No source or target code was modified."
+            exit 1
+          fi
+          WORK="$(mktemp -d)"
+          trap 'rm -rf "$WORK"' EXIT
+          cat > "$WORK/askpass.sh" <<'ASKPASS'
+          #!/bin/sh
+          case "$1" in
+            *Username*) printf '%s\n' x-access-token ;;
+            *) printf '%s\n' "$GIT_AUTH_TOKEN" ;;
+          esac
+          ASKPASS
+          chmod 700 "$WORK/askpass.sh"
+          export GIT_ASKPASS="$WORK/askpass.sh"
+          export GIT_AUTH_TOKEN="$SOURCE_REPO_PAT"
+          git config --global user.name 'ESC Repository Bootstrap'
+          git config --global user.email 'bootstrap@users.noreply.github.com'
+          URL='https://github.com/ngocnhanvo'
+          # Never rewrite the source. Stop if the destination already has code.
+          for repo in nghiencuukhoahoc-astro nghiencuukhoahoc-php; do
+            refs="$(git ls-remote "$URL/$repo.git" 'refs/heads/*')"
+            if [ -n "$refs" ]; then
+              echo "::error::$repo is no longer empty; stopping to avoid overwriting any branch."
+              exit 1
+            fi
+          done
+
+          echo 'Importing Astro source (github branch first)...'
+          git clone -q --depth 1 --single-branch --branch github "$URL/xuongmunonbaohiem-astro.git" "$WORK/astro-src"
+          git -C "$WORK/astro-src" fetch -q --depth 1 origin master:refs/remotes/origin/master
+          mkdir -p "$WORK/astro-target"
+          rsync -a --exclude='/.git/' --exclude='/.env' --exclude='/.env.*' "$WORK/astro-src/" "$WORK/astro-target/"
+          git -C "$WORK/astro-target" init -q -b github
+          git -C "$WORK/astro-target" add -A
+          git -C "$WORK/astro-target" commit -qm 'import: Blue Sea Astro development base'
+          git -C "$WORK/astro-target" remote add origin "$URL/nghiencuukhoahoc-astro.git"
+          git -C "$WORK/astro-target" push -q origin github:github
+          ASTRO_GITHUB_SHA="$(git -C "$WORK/astro-target" rev-parse HEAD)"
+          git -C "$WORK/astro-target" checkout -q -b master
+          git -C "$WORK/astro-src" checkout -q --detach refs/remotes/origin/master
+          rsync -a --delete --exclude='/.git/' --exclude='/.env' --exclude='/.env.*' "$WORK/astro-src/" "$WORK/astro-target/"
+          git -C "$WORK/astro-target" add -A
+          if ! git -C "$WORK/astro-target" diff --cached --quiet; then
+            git -C "$WORK/astro-target" commit -qm 'import: match Blue Sea Astro production base'
+          fi
+          git -C "$WORK/astro-target" push -q origin master:master master:main
+          echo "Astro github commit: $ASTRO_GITHUB_SHA"
+          echo "Astro master commit: $(git -C "$WORK/astro-target" rev-parse HEAD)"
+
+          echo 'Importing WordPress/PHP without production credentials or generated uploads...'
+          git clone -q --depth 1 --single-branch --branch master "$URL/xuongmunonbaohiem-php.git" "$WORK/php-src"
+          mkdir -p "$WORK/php-target"
+          rsync -a \
+            --exclude='/.git/' \
+            --exclude='/.env' --exclude='/.env.*' \
+            --exclude='/wp-config.php' --exclude='/wp-config.php.*' \
+            --exclude='/wp-content/uploads/' --exclude='/wp-content/debug.log' \
+            --exclude='/local-xdebuginfo.php' \
+            --exclude='/.github/workflows/' \
+            "$WORK/php-src/" "$WORK/php-target/"
+          if [ -d "$WORK/php-src/.github/workflows" ]; then
+            mkdir -p "$WORK/php-target/.github/workflow-templates"
+            cp -a "$WORK/php-src/.github/workflows/." "$WORK/php-target/.github/workflow-templates/"
+          fi
+          git -C "$WORK/php-target" init -q -b master
+          git -C "$WORK/php-target" add -A
+          git -C "$WORK/php-target" commit -qm 'import: Blue Sea WordPress codebase, omit secrets uploads and live workflows'
+          git -C "$WORK/php-target" remote add origin "$URL/nghiencuukhoahoc-php.git"
+          git -C "$WORK/php-target" push -q origin master:master master:main
+          echo "PHP master commit: $(git -C "$WORK/php-target" rev-parse HEAD)"
+
+          echo 'Importing reusable Actions assets as disabled templates...'
+          git clone -q --depth 1 --single-branch --branch main "$URL/xuongmunonbaohiem-actions.git" "$WORK/actions-src"
+          mkdir -p .github/workflow-templates
+          cp -a "$WORK/actions-src/.github/workflows/." .github/workflow-templates/
+          [ ! -d "$WORK/actions-src/scripts" ] || cp -a "$WORK/actions-src/scripts" .
+          [ ! -d "$WORK/actions-src/docs" ] || cp -a "$WORK/actions-src/docs" .
+          [ ! -d "$WORK/actions-src/tests" ] || cp -a "$WORK/actions-src/tests" .
+          cat > README.md <<'README'
+          # nghiencuukhoahoc-actions
+
+          GitHub Actions hub for nghiencuukhoahoc.id.vn.
+
+          Based on the xuongmunonbaohiem-actions codebase. Deployment is deliberately disabled during migration.
+
+          - Frontend: ngocnhanvo/nghiencuukhoahoc-astro (github = development, master = production).
+          - Backend: ngocnhanvo/nghiencuukhoahoc-php (master).
+          - Actions: ngocnhanvo/nghiencuukhoahoc-actions (main).
+
+          Source workflow definitions are preserved as reference under .github/workflow-templates (NOT executable).
+          Review and replace old Blue Sea repository names, domains, WordPress endpoints, FTP destinations, and environment variables before enabling any workflow in .github/workflows. Do not reuse old Blue Sea deploy settings. No automatic deployments are enabled.
+
+          The import intentionally excludes WordPress wp-config.php, backup copies, generated uploads, logs, and active deployment workflows; it does not migrate the database or WordPress content.
+          README
+          cat > MIGRATION_NOTES.md <<'NOTES'
+          # Bootstrap provenance and next steps
+
+          Source repositories (read-only during import):
+          - ngocnhanvo/xuongmunonbaohiem-astro (github and master)
+          - ngocnhanvo/xuongmunonbaohiem-php (master)
+          - ngocnhanvo/xuongmunonbaohiem-actions (main)
+
+          Target repositories:
+          - ngocnhanvo/nghiencuukhoahoc-astro (github, master; main mirrors master)
+          - ngocnhanvo/nghiencuukhoahoc-php (master; main mirrors master)
+          - ngocnhanvo/nghiencuukhoahoc-actions (main)
+
+          Before deploying: configure an independent WordPress admin and database;
+          create new wp-config.php only on the proper server; configure WC_URL,
+          public domain, WP REST endpoints, Astro environment values, dedicated FTP
+          paths and secrets. Audit hardcoded Blue Sea references in templates.
+          Enable only audited Actions workflows with site-specific targets.
+          No live Blue Sea production site should be changed by this migration.
+          NOTES
+          # One-time bootstrap: remove this workflow so the final target has no active deploy workflows.
+          rm -f .github/workflows/bootstrap-nckh.yml
+          git add README.md MIGRATION_NOTES.md .github scripts docs tests
+          git commit -qm 'import: reusable Blue Sea CI scripts and disabled workflow templates'
+          if ! GIT_AUTH_TOKEN="$ACTIONS_PUSH_TOKEN" git push -q origin HEAD:main; then
+            echo "Retrying Actions hub push with SOURCE_REPO_PAT..."
+            GIT_AUTH_TOKEN="$SOURCE_REPO_PAT" git push -q origin HEAD:main
+          fi
+          echo 'Bootstrap complete. Source repositories were not changed. No deploy workflow was activated.'
