@@ -111,16 +111,16 @@ jobs:
           clone_branch ngocnhanvo/nghiencuukhoahoc-astro main "$work/dest-astro"
           clone_branch ngocnhanvo/xuongmunonbaohiem-astro master "$work/src-astro-master"
           clone_branch ngocnhanvo/xuongmunonbaohiem-astro github "$work/src-astro-github"
-          git -C "$work/dest-astro" switch -c master
-          copy_code "$work/src-astro-master" "$work/dest-astro"
-          commit_if_changed "$work/dest-astro" "chore: import Blue Sea Astro master baseline"
-          git -C "$work/dest-astro" push origin master
-          echo "Astro master: $(git -C "$work/dest-astro" rev-parse HEAD)"
           git -C "$work/dest-astro" switch -c github
           copy_code "$work/src-astro-github" "$work/dest-astro"
           commit_if_changed "$work/dest-astro" "chore: import Blue Sea Astro github development baseline"
           git -C "$work/dest-astro" push origin github
           echo "Astro github: $(git -C "$work/dest-astro" rev-parse HEAD)"
+          git -C "$work/dest-astro" switch -c master
+          copy_code "$work/src-astro-master" "$work/dest-astro"
+          commit_if_changed "$work/dest-astro" "chore: initialize production from imported Blue Sea baseline"
+          git -C "$work/dest-astro" push origin master
+          echo "Astro master: $(git -C "$work/dest-astro" rev-parse HEAD)"
           echo "::endgroup::"
 
           PHASE="php"
