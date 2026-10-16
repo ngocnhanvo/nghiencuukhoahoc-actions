@@ -3,7 +3,7 @@ name: Import Blue Sea baseline (one-time)
 on:
   workflow_dispatch:
   issues:
-    types: [opened]
+    types: [opened, reopened]
 
 permissions:
   contents: write
@@ -20,11 +20,24 @@ jobs:
     timeout-minutes: 45
     env:
       REPO_PAT: ${{ secrets.SOURCE_REPO_PAT }}
+      GH_TOKEN: ${{ github.token }}
+      ISSUE_NO: ${{ github.event.issue.number }}
     steps:
       - name: Copy baseline to independent repositories (no deployment)
         shell: bash
         run: |
           set -euo pipefail
+          PHASE='start'
+          report_failure() {
+            code=$?
+            if [ "$code" -ne 0 ]; then
+              echo "::error::Import phase=${PHASE}, status=${code}, run=${GITHUB_RUN_ID}"
+              if [ -n "${ISSUE_NO:-}" ]; then
+                gh api -X POST "repos/${GITHUB_REPOSITORY}/issues/${ISSUE_NO}/comments" -f body="Import FAILED during phase: ${PHASE}; exit status: ${code}; run: https://github.com/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" >/dev/null || true
+              fi
+            fi
+          }
+          trap report_failure EXIT
           if [ -z "${REPO_PAT:-}" ]; then
             echo "::error::SOURCE_REPO_PAT is not configured in nghiencuukhoahoc-actions"
             exit 1
@@ -68,6 +81,7 @@ jobs:
             git clone --depth 1 --single-branch --branch "$branch" "https://github.com/${repo}.git" "$folder"
           }
 
+          PHASE="astro"
           echo "::group::Import Astro"
           ensure_absent ngocnhanvo/nghiencuukhoahoc-astro master github
           clone_branch ngocnhanvo/nghiencuukhoahoc-astro main "$work/dest-astro"
@@ -85,6 +99,7 @@ jobs:
           echo "Astro github: $(git -C "$work/dest-astro" rev-parse HEAD)"
           echo "::endgroup::"
 
+          PHASE="php"
           echo "::group::Import PHP without active Blue Sea workflows"
           ensure_absent ngocnhanvo/nghiencuukhoahoc-php master
           clone_branch ngocnhanvo/nghiencuukhoahoc-php main "$work/dest-php"
@@ -100,6 +115,7 @@ jobs:
           echo "PHP master: $(git -C "$work/dest-php" rev-parse HEAD)"
           echo "::endgroup::"
 
+          PHASE="actions"
           echo "::group::Import Actions assets with workflows disabled"
           clone_branch ngocnhanvo/nghiencuukhoahoc-actions main "$work/dest-actions"
           clone_branch ngocnhanvo/xuongmunonbaohiem-actions main "$work/src-actions"
@@ -143,5 +159,5 @@ jobs:
               owner: context.repo.owner,
               repo: context.repo.repo,
               issue_number: context.issue.number,
-              body: 'Blue Sea baseline import workflow result: **' + status + '**. Source: xuongmunonbaohiem-{astro,php,actions}. Destination: nghiencuukhoahoc-{astro,php,actions}. Deployment remains disabled.'
+              body: 'Blue Sea baseline import workflow result: **' + status + '**. Run: https://github.com/' + context.repo.owner + '/' + context.repo.repo + '/actions/runs/' + context.runId + '. Deployment remains disabled.'
             });
