@@ -1,0 +1,126 @@
+name: Import Blue Sea baseline (one-time)
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - ".github/workflows/import-blue-sea-baseline.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  import:
+    if: github.repository == 'ngocnhanvo/nghiencuukhoahoc-actions'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      REPO_PAT: ${{ secrets.SOURCE_REPO_PAT }}
+    steps:
+      - name: Copy baseline to independent repositories (no deployment)
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -z "${REPO_PAT:-}" ]; then
+            echo "::error::SOURCE_REPO_PAT is not configured in nghiencuukhoahoc-actions"
+            exit 1
+          fi
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git config --global url."https://x-access-token:${REPO_PAT}@github.com/".insteadOf "https://github.com/"
+          work="${RUNNER_TEMP}/nghiencuukhoahoc-import"
+          mkdir -p "$work"
+
+          copy_code() {
+            local source="$1" dest="$2"
+            rsync -a --delete \
+              --exclude '/.git/' \
+              --exclude '/README.md' \
+              --exclude '/.github/workflows/' \
+              --exclude '/.env' --exclude '/.env.*' \
+              --exclude '/wp-config.php' \
+              --exclude '*.pem' --exclude '*.key' \
+              "$source/" "$dest/"
+          }
+          commit_if_changed() {
+            local dest="$1" message="$2"
+            git -C "$dest" add -A
+            if ! git -C "$dest" diff --cached --quiet; then
+              git -C "$dest" commit -m "$message"
+            fi
+          }
+          ensure_absent() {
+            local repo="$1"; shift
+            local branch
+            for branch in "$@"; do
+              if git ls-remote --exit-code --heads "https://github.com/${repo}.git" "refs/heads/${branch}" >/dev/null; then
+                echo "::error::Refusing to overwrite ${repo}@${branch} (already exists)"
+                exit 1
+              fi
+            done
+          }
+          clone_branch() {
+            local repo="$1" branch="$2" folder="$3"
+            git clone --depth 1 --single-branch --branch "$branch" "https://github.com/${repo}.git" "$folder"
+          }
+
+          echo "::group::Import Astro"
+          ensure_absent ngocnhanvo/nghiencuukhoahoc-astro master github
+          clone_branch ngocnhanvo/nghiencuukhoahoc-astro main "$work/dest-astro"
+          clone_branch ngocnhanvo/xuongmunonbaohiem-astro master "$work/src-astro-master"
+          clone_branch ngocnhanvo/xuongmunonbaohiem-astro github "$work/src-astro-github"
+          git -C "$work/dest-astro" switch -c master
+          copy_code "$work/src-astro-master" "$work/dest-astro"
+          commit_if_changed "$work/dest-astro" "chore: import Blue Sea Astro master baseline"
+          git -C "$work/dest-astro" push origin master
+          echo "Astro master: $(git -C "$work/dest-astro" rev-parse HEAD)"
+          git -C "$work/dest-astro" switch -c github
+          copy_code "$work/src-astro-github" "$work/dest-astro"
+          commit_if_changed "$work/dest-astro" "chore: import Blue Sea Astro github development baseline"
+          git -C "$work/dest-astro" push origin github
+          echo "Astro github: $(git -C "$work/dest-astro" rev-parse HEAD)"
+          echo "::endgroup::"
+
+          echo "::group::Import PHP without active Blue Sea workflows"
+          ensure_absent ngocnhanvo/nghiencuukhoahoc-php master
+          clone_branch ngocnhanvo/nghiencuukhoahoc-php main "$work/dest-php"
+          clone_branch ngocnhanvo/xuongmunonbaohiem-php master "$work/src-php"
+          git -C "$work/dest-php" switch -c master
+          copy_code "$work/src-php" "$work/dest-php"
+          if [ -d "$work/src-php/.github/workflows" ]; then
+            mkdir -p "$work/dest-php/.github/blue-sea-workflows-disabled"
+            rsync -a "$work/src-php/.github/workflows/" "$work/dest-php/.github/blue-sea-workflows-disabled/"
+          fi
+          commit_if_changed "$work/dest-php" "chore: import Blue Sea PHP baseline with deploy workflows disabled"
+          git -C "$work/dest-php" push origin master
+          echo "PHP master: $(git -C "$work/dest-php" rev-parse HEAD)"
+          echo "::endgroup::"
+
+          echo "::group::Import Actions assets with workflows disabled"
+          clone_branch ngocnhanvo/nghiencuukhoahoc-actions main "$work/dest-actions"
+          clone_branch ngocnhanvo/xuongmunonbaohiem-actions main "$work/src-actions"
+          rsync -a \
+            --exclude '/.git/' --exclude '/README.md' \
+            --exclude '/.github/workflows/' \
+            --exclude '/.env' --exclude '/.env.*' \
+            --exclude '*.pem' --exclude '*.key' \
+            "$work/src-actions/" "$work/dest-actions/"
+          if [ -d "$work/src-actions/.github/workflows" ]; then
+            mkdir -p "$work/dest-actions/.github/blue-sea-workflows-disabled"
+            rsync -a "$work/src-actions/.github/workflows/" "$work/dest-actions/.github/blue-sea-workflows-disabled/"
+          fi
+          cat > "$work/dest-actions/IMPORT_STATUS.md" <<'STATUS'
+          # Blue Sea baseline imported
+          Origin: ngocnhanvo/xuongmunonbaohiem-{astro,php,actions}
+          Destination: ngocnhanvo/nghiencuukhoahoc-{astro,php,actions}
+
+          All source CI deployment workflows are retained at
+          .github/blue-sea-workflows-disabled/ and cannot run automatically.
+
+          No deploy is permitted until the new domain, WordPress settings,
+          build environment, FTP endpoints and secrets are checked and updated.
+          STATUS
+          commit_if_changed "$work/dest-actions" "chore: import Blue Sea Actions assets without enabling deployments"
+          git -C "$work/dest-actions" push origin main
+          echo "Actions main: $(git -C "$work/dest-actions" rev-parse HEAD)"
+          echo "::endgroup::"
