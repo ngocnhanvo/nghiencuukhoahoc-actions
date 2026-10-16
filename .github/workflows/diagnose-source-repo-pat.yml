@@ -1,0 +1,56 @@
+name: Diagnose SOURCE_REPO_PAT access
+
+on:
+  issues:
+    types: [opened]
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  diagnose:
+    if: github.event.issue.title == '[diagnose] SOURCE_REPO_PAT'
+    runs-on: ubuntu-latest
+    env:
+      REPO_PAT: ${{ secrets.SOURCE_REPO_PAT }}
+      GH_TOKEN: ${{ github.token }}
+      ISSUE_NUMBER: ${{ github.event.issue.number }}
+    steps:
+      - name: Test secret authentication against source and destination repositories
+        shell: bash
+        run: |
+          set -euo pipefail
+          report="${RUNNER_TEMP}/pat-report.md"
+          printf '## SOURCE_REPO_PAT diagnostic\n\n' > "$report"
+          if [ -z "${REPO_PAT:-}" ]; then
+            printf 'Secret is missing or empty.\n' >> "$report"
+          else
+            curl_args=(-sS --connect-timeout 10 --max-time 30 -H "Accept: application/vnd.github+json" -H "Authorization: Bearer ${REPO_PAT}" -H "X-GitHub-Api-Version: 2022-11-28")
+            user_http=$(curl "${curl_args[@]}" -o "$RUNNER_TEMP/gh-viewer.json" -w '%{http_code}' "https://api.github.com/user" || echo curl-error)
+            if [ "$user_http" = 200 ]; then
+              login=$(jq -r '.login // "unknown"' "$RUNNER_TEMP/gh-viewer.json")
+              printf 'Authenticated identity: **%s** (HTTP 200).\n\n' "$login" >> "$report"
+            else
+              printf 'Authentication via API: HTTP **%s**.\n\n' "$user_http" >> "$report"
+            fi
+            printf '| Repository | API HTTP | Git HTTPS read |\n|---|---:|---|\n' >> "$report"
+            git config --global url."https://x-access-token:${REPO_PAT}@github.com/".insteadOf "https://github.com/"
+            for repo in \
+              xuongmunonbaohiem-astro \
+              xuongmunonbaohiem-php \
+              xuongmunonbaohiem-actions \
+              nghiencuukhoahoc-astro \
+              nghiencuukhoahoc-php \
+              nghiencuukhoahoc-actions; do
+              api_code=$(curl "${curl_args[@]}" -o "$RUNNER_TEMP/result.json" -w '%{http_code}' "https://api.github.com/repos/ngocnhanvo/${repo}" || echo curl-error)
+              git_state="FAIL"
+              if GIT_TERMINAL_PROMPT=0 git ls-remote "https://github.com/ngocnhanvo/${repo}.git" HEAD >/dev/null 2>"$RUNNER_TEMP/git-error"; then
+                git_state="OK"
+              fi
+              printf '| `%s` | %s | %s |\n' "$repo" "$api_code" "$git_state" >> "$report"
+              echo "$repo: API $api_code; Git $git_state"
+            done
+          fi
+          printf '\nNo secret values are displayed. This diagnostic did not write to the source or destination code repositories.\n' >> "$report"
+          gh api "repos/${GITHUB_REPOSITORY}/issues/${ISSUE_NUMBER}/comments" -X POST -f body=@"$report" >/dev/null
