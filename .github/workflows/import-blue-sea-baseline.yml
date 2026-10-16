@@ -82,6 +82,30 @@ jobs:
           }
 
           PHASE="astro"
+          PHASE="read-source-preflight"
+          for entry in \
+            "ngocnhanvo/xuongmunonbaohiem-astro github" \
+            "ngocnhanvo/xuongmunonbaohiem-php master" \
+            "ngocnhanvo/xuongmunonbaohiem-actions main"; do
+            read -r repo branch <<< "$entry"
+            if ! git ls-remote --exit-code "https://github.com/${repo}.git" "refs/heads/${branch}" >/dev/null; then
+              echo "::error::SOURCE_REPO_PAT cannot read ${repo}@${branch}"
+              exit 1
+            fi
+            echo "Confirmed source PAT read: ${repo}@${branch}"
+          done
+          PHASE="read-target-preflight"
+          for repo in \
+            ngocnhanvo/nghiencuukhoahoc-astro \
+            ngocnhanvo/nghiencuukhoahoc-php \
+            ngocnhanvo/nghiencuukhoahoc-actions; do
+            if ! git ls-remote --exit-code "https://github.com/${repo}.git" "refs/heads/main" >/dev/null; then
+              echo "::error::SOURCE_REPO_PAT cannot access ${repo}. Grant Contents read/write on the destination."
+              exit 1
+            fi
+            echo "Confirmed target PAT read: ${repo}"
+          done
+
           echo "::group::Import Astro"
           ensure_absent ngocnhanvo/nghiencuukhoahoc-astro master github
           clone_branch ngocnhanvo/nghiencuukhoahoc-astro main "$work/dest-astro"
