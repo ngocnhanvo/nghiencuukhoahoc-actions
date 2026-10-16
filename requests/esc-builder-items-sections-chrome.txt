@@ -1,0 +1,1 @@
+Run production read-only Chrome QA once with verified workflow blob 38a5bba6bcc9d50f1fbe167d0091bafae0c5b31b. Test ESC Table popup, clone, section reorder and cancel restores DOM. No product or Page data writes, no deploy.

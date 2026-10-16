@@ -1,0 +1,138 @@
+name: ESC Builder Page Editor Text Contract
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'requests/esc-builder-page-text-contract.txt'
+permissions:
+  contents: read
+jobs:
+  read-only:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    steps:
+      - name: Resolve WC_URL from ENV_FILE
+        shell: bash
+        env:
+          ENV_FILE: ${{ secrets.ENV_FILE }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import os,re
+          from urllib.parse import urlsplit
+          vals=[]
+          for line in os.environ.get("ENV_FILE","").splitlines():
+              line=line.strip()
+              if line.startswith("export "): line=line[7:].strip()
+              if line.startswith("WC_URL="):
+                  v=line.split("=",1)[1].strip()
+                  if len(v)>=2 and v[0]==v[-1] and v[0] in ("'",'"'):v=v[1:-1]
+                  vals.append(v)
+          if len(vals)!=1:raise SystemExit("Missing or duplicate WC_URL in ENV_FILE")
+          parsed=urlsplit(vals[0]);host=(parsed.hostname or "").lower()
+          if (parsed.scheme!="https" or not re.fullmatch(r"[a-z0-9.-]+",host)
+              or "." not in host or ".." in host or parsed.username or parsed.password
+              or parsed.port not in (None,443) or parsed.path not in ("","/")
+              or parsed.query or parsed.fragment):raise SystemExit("Invalid WC_URL")
+          with open(os.environ["GITHUB_ENV"],"a",encoding="utf8") as f:
+              f.write("WC_URL=https://"+host+"\n")
+          PY
+      - name: Check authenticated page text without customer writes
+        env:
+          WP_ADMIN_USERNAME: ${{ secrets.WP_ADMIN_USERNAME }}
+          WP_ADMIN_PASSWORD: ${{ secrets.WP_ADMIN_PASSWORD }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m pip install -q requests beautifulsoup4
+          python3 - <<'PY'
+          import os,re,requests
+          from urllib.parse import urlparse,parse_qs
+          from bs4 import BeautifulSoup
+          root = os.environ['WC_URL'].split('/wp-admin')[0].rstrip('/')
+          session=requests.Session()
+          session.get(root+'/wp-login.php',timeout=30)
+          session.post(root+'/wp-login.php',data={
+            'log':os.environ['WP_ADMIN_USERNAME'],'pwd':os.environ['WP_ADMIN_PASSWORD'],
+            'wp-submit':'Log In','redirect_to':root+'/wp-admin/admin.php?page=esc-visual-builder',
+            'testcookie':'1'
+          },timeout=40,allow_redirects=True)
+          resp=session.get(root+'/wp-admin/admin.php?page=esc-visual-builder',timeout=45)
+          if resp.status_code!=200 or 'wp-login.php' in resp.url:
+            raise SystemExit('Builder login denied HTTP '+str(resp.status_code))
+          soup=BeautifulSoup(resp.text,'html.parser')
+          iframe=soup.select_one('#esc-vb-frame')
+          if not iframe: raise SystemExit('Builder iframe missing')
+          src=iframe.get('src','')
+          parsed=urlparse(src)
+          ticket=parse_qs(parsed.query).get('ticket',[''])[0]
+          page_id=int(parsed.path.rstrip('/').split('/')[-1])
+          match=re.search('const restNonce[ ]*=[ ]*["]([a-zA-Z0-9]+)["]',resp.text)
+          if len(ticket)!=64 or not match: raise SystemExit('Builder credential metadata missing')
+          headers={'X-WP-Nonce':match.group(1)}
+          endpoint=root+'/wp-json/esc-builder/v1/'
+          base={'ticket':ticket,'page_id':page_id}
+          read=session.post(endpoint+'editable-page-text',json=base,headers=headers,timeout=45)
+          if read.status_code!=200:
+            raise SystemExit('Page text read HTTP '+str(read.status_code)+' code '+str(read.json().get('code',''))[:60])
+          data=read.json()
+          fields=data.get('rows',[])
+          version=data.get('version','')
+          if data.get('source')!='page_html' or len(version)!=64 or not isinstance(fields,list):
+            raise SystemExit('Page HTML read schema invalid')
+          if len(fields)>600 or any(not r.get('id') or not r.get('editable') or len(r.get('hash',''))!=64 for r in fields):
+            raise SystemExit('Page text token inventory invalid')
+          invalid=session.post(endpoint+'editable-page-text',json={'ticket':'invalid','page_id':page_id},headers=headers,timeout=30)
+          if invalid.status_code!=403: raise SystemExit('Invalid ticket must return HTTP403')
+          if fields:
+            first=next((r for r in fields if chr(10) not in r['title'] and len(r['title'])<120),None)
+            if first:
+              entry={**base,'part':first['part'],'offset':first['offset'],
+                'original_hash':first['hash'],'title':first['title'],
+                'expected_version':'0'*64}
+              stale=session.post(endpoint+'save-page-text',json=entry,headers=headers,timeout=45)
+              if stale.status_code!=409:
+                raise SystemExit('Stale Page text version expected HTTP409, got '+str(stale.status_code))
+              entry['expected_version']=version
+              unchanged=session.post(endpoint+'save-page-text',json=entry,headers=headers,timeout=45)
+              if unchanged.status_code!=200 or not unchanged.json().get('unchanged') or unchanged.json().get('saved'):
+                raise SystemExit('No-op Page save unexpectedly modified content')
+          verify=session.post(endpoint+'editable-page-text',json=base,headers=headers,timeout=45)
+          if verify.status_code!=200 or verify.json().get('version')!=version:
+            raise SystemExit('Page content changed during read-only QA')
+          # The homepage can legitimately consist of ESC Tables only. Find
+          # one other Page with literal Editor HTML, without copying its text.
+          choices=[int(option.get('value')) for option in soup.select('#esc-vb-page option')
+                   if (option.get('value') or '').isdigit() and int(option['value'])!=page_id]
+          examined=0
+          discovered=0
+          for other_id in choices[:4] + choices[len(choices)//2:len(choices)//2+3] + choices[-3:]:
+            if examined>=8 or discovered: break
+            examined+=1
+            other=session.get(root+'/wp-admin/admin.php?page=esc-visual-builder&esc_vb_page='+str(other_id),timeout=45)
+            if other.status_code!=200 or 'wp-login.php' in other.url: continue
+            frame=BeautifulSoup(other.text,'html.parser').select_one('#esc-vb-frame')
+            if not frame: continue
+            info=urlparse(frame.get('src',''))
+            other_ticket=parse_qs(info.query).get('ticket',[''])[0]
+            nonce_match=re.search('const restNonce[ ]*=[ ]*["]([a-zA-Z0-9]+)["]',other.text)
+            if len(other_ticket)!=64 or not nonce_match: continue
+            q=session.post(endpoint+'editable-page-text',json={
+              'ticket':other_ticket,'page_id':other_id
+            },headers={'X-WP-Nonce':nonce_match.group(1)},timeout=45)
+            if q.status_code!=200: continue
+            tokens=q.json().get('rows',[])
+            if tokens:
+              discovered=len(tokens)
+              print('BUILDER_PAGE_EDITOR_NONHOME='+str({
+                'page_id':other_id,'candidateCount':discovered,'readHTTP':200
+              }))
+          print('BUILDER_PAGE_EDITOR_PAGE_SCAN='+str({
+            'examined':examined,'foundEditablePage':discovered>0
+          }))
+          print('BUILDER_PAGE_EDITOR_CONTRACT_PASS='+str({
+            'readHTTP':200,'fields':len(fields),
+            'invalidTicketHTTP':403,'versionUnchanged':True,'contentWrites':False
+          }))
+          PY

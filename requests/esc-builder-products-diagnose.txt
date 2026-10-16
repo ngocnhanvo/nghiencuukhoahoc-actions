@@ -1,0 +1,1 @@
+Post-cache recovery Chrome QA: WordPress Page 53504 Action ProductsSSRPage key ssr-products; Astro SSR route and Builder both resolve Action without remapping. URL /preview/san-pham recovered HTTP 200 run 38075651796; verify banner/H1 and log product source differences only. No WP writes.

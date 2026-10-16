@@ -1,0 +1,1 @@
+Verify legacy category H1 parity fix (products index and Vespa Bọc da) after Astro github commit 2ec49eb84cad1f6ed1e4898ad1a7fa3b19916cce. QA-only, no deployment. 2026-10-12.

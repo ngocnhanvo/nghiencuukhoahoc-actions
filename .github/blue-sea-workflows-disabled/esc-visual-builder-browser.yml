@@ -1,0 +1,522 @@
+name: ESC Visual Builder Browser QA
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'requests/esc-visual-builder-browser.txt'
+
+permissions:
+  contents: read
+
+jobs:
+  browser:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - name: Resolve WC_URL from ENV_FILE
+        shell: bash
+        env:
+          ENV_FILE: ${{ secrets.ENV_FILE }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import os,re
+          from urllib.parse import urlsplit
+          vals=[]
+          for line in os.environ.get("ENV_FILE","").splitlines():
+              line=line.strip()
+              if line.startswith("export "):line=line[7:].strip()
+              if line.startswith("WC_URL="):
+                  v=line.split("=",1)[1].strip()
+                  if len(v)>=2 and v[0]==v[-1] and v[0] in ("'",'"'):v=v[1:-1]
+                  vals.append(v)
+          if len(vals)!=1:raise SystemExit("Missing or duplicate WC_URL in ENV_FILE")
+          parsed=urlsplit(vals[0]);host=(parsed.hostname or "").lower()
+          if (parsed.scheme!="https" or not re.fullmatch(r"[a-z0-9.-]+",host)
+              or "." not in host or ".." in host or parsed.username or parsed.password
+              or parsed.port not in (None,443) or parsed.path not in ("","/")
+              or parsed.query or parsed.fragment):raise SystemExit("Invalid WC_URL")
+          with open(os.environ["GITHUB_ENV"],"a",encoding="utf8") as f:
+              f.write("WC_URL=https://"+host+"\n")
+          PY
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Setup Chrome
+        id: chrome
+        uses: browser-actions/setup-chrome@v2
+        with:
+          chrome-version: stable
+      - name: Install browser runner
+        run: npm install --no-save --no-package-lock puppeteer-core@24
+      - name: Assert unauthenticated preview is denied
+        shell: bash
+        run: |
+          set -euo pipefail
+          code="$(curl -sSL -o /tmp/esc-vb-denied.html -w '%{http_code}' --max-time 40 \
+                 https://xuongmunonbaohiem.io.vn/esc-builder/preview/1)"
+          echo "Unauthenticated Astro Builder route: HTTP $code"
+          test "$code" = 403
+      - name: Inspect live WordPress Builder iframe in Chrome
+        env:
+          WP_ADMIN_USERNAME: ${{ secrets.WP_ADMIN_USERNAME }}
+          WP_ADMIN_PASSWORD: ${{ secrets.WP_ADMIN_PASSWORD }}
+          CHROME_PATH: ${{ steps.chrome.outputs.chrome-path }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$WC_URL"
+          test -n "$WP_ADMIN_USERNAME"
+          test -n "$WP_ADMIN_PASSWORD"
+          mkdir -p reports
+          node --input-type=module <<'JS'
+          import puppeteer from 'puppeteer-core';
+          const origin = new URL(process.env.WC_URL).origin;
+          const browser = await puppeteer.launch({
+            headless: true, executablePath: process.env.CHROME_PATH,
+            args: ['--no-sandbox', '--disable-dev-shm-usage'],
+          });
+          const failures = [];
+          const resourceFailures = [];
+          const responseAudit = [];
+          try {
+            const page = await browser.newPage();
+            await page.setViewport({width: 1450, height: 900, deviceScaleFactor: 1});
+            page.on('pageerror', error => failures.push(error.message.slice(0,300)));
+            page.on('response', response => {
+              if (response.status() < 400) return;
+              try {
+                const url = new URL(response.url());
+                // Never log bearer tokens, credentials or query strings.
+                if (!url.pathname.includes('/wp-login.php')) {
+                  responseAudit.push({status:response.status(),host:url.host,path:url.pathname.slice(0,180),type:response.request().resourceType()});
+                }
+              } catch {}
+            });
+            page.on('requestfailed', request => {
+              try {
+                const url = new URL(request.url());
+                resourceFailures.push({host:url.host,path:url.pathname.slice(0,180),reason:request.failure()?.errorText?.slice(0,100)});
+              } catch {}
+            });
+            // Intermittent WordPress login/admin TTFB can exceed Chrome's
+            // navigation deadline during background cron or hosting pressure.
+            // Retry bounded GET navigation only (never submit credentials twice).
+            async function gotoWpWithRetry(url, label) {
+              let lastError;
+              for (let attempt=1;attempt<=2;attempt++) {
+                const started=Date.now();
+                try {
+                  const response=await page.goto(url,{
+                    waitUntil:'domcontentloaded',timeout:attempt===1?45000:70000
+                  });
+                  const status=response?.status() ?? null;
+                  console.log('BUILDER_WP_NAVIGATION='+JSON.stringify({
+                    label,attempt,status,elapsedMs:Date.now()-started
+                  }));
+                  if (status===200) return response;
+                  if (![429,502,503,504].includes(status)) throw Error(label+' HTTP '+status);
+                } catch(error) {
+                  lastError=error;
+                  console.log('BUILDER_WP_NAVIGATION_RETRY='+JSON.stringify({
+                    label,attempt,elapsedMs:Date.now()-started,
+                    error:String(error?.message||error).slice(0,160)
+                  }));
+                  if (attempt===2) throw error;
+                }
+                if (attempt===1) await new Promise(resolve=>setTimeout(resolve,1800));
+              }
+              throw lastError || Error(label+' unavailable');
+            }
+            await gotoWpWithRetry(origin + '/wp-login.php','login');
+            await page.waitForSelector('#user_login', {timeout: 20000});
+            await page.type('#user_login', process.env.WP_ADMIN_USERNAME);
+            await page.type('#user_pass', process.env.WP_ADMIN_PASSWORD);
+            await Promise.all([
+              page.waitForNavigation({waitUntil:'domcontentloaded',timeout:45000}).catch(() => {}),
+              page.click('#wp-submit')
+            ]);
+            const adminUrl = origin + '/wp-admin/admin.php?page=esc-visual-builder';
+            const iframeResponses = [];
+            page.on('response', response => { if (response.url().includes('/esc-builder/preview/')) iframeResponses.push({status:response.status(),path:new URL(response.url()).pathname}); });
+            const adminResponse = await gotoWpWithRetry(adminUrl,'visual-builder-admin');
+            console.log('BUILDER_ADMIN_HTTP=' + JSON.stringify({
+              status:adminResponse?.status() ?? null,
+              path:new URL(page.url()).pathname,
+              server:adminResponse?.headers()?.server ?? null,
+              contentType:adminResponse?.headers()?.['content-type'] ?? null,
+              retryAfter:adminResponse?.headers()?.['retry-after'] ?? null,
+              title:await page.title()
+            }));
+            if (!adminResponse || adminResponse.status() !== 200) throw Error('WP admin Builder HTTP ' + (adminResponse?.status() ?? 'none'));
+            if (page.url().includes('wp-login.php')) throw Error('WordPress login failed');
+            const pageSummary = await page.evaluate(() => ({
+              title: document.title,
+              content: (document.querySelector('.wrap')?.innerText || document.body.innerText).slice(0,350)
+            }));
+            console.log('BUILDER_ADMIN_DIAGNOSTICS=' + JSON.stringify({url:page.url(), ...pageSummary}));
+            await page.screenshot({path:'reports/esc-builder-admin-before-frame.png',fullPage:false});
+            await page.waitForSelector('#esc-vb-frame', {timeout:20000});
+            // Builder workspace regression: no document-level scroll on desktop,
+            // and each of the three panes owns its own scroll behavior.
+            const layoutAudit = await page.evaluate(() => {
+              const menu=document.querySelector('#adminmenuwrap');
+              const sidebar=document.querySelector('#esc-vb-layout .esc-vb-sidebar');
+              const preview=document.querySelector('#esc-vb-layout .esc-vb-preview-viewport');
+              const iframe=document.querySelector('#esc-vb-frame');
+              const wpbody=document.querySelector('#wpbody-content');
+              if (!menu || !sidebar || !preview || !iframe || !wpbody)
+                throw Error('Missing Visual Builder workspace region');
+              const style=el => getComputedStyle(el);
+              const asRect=el => {
+                const r=el.getBoundingClientRect();
+                return {top:Math.round(r.top),bottom:Math.round(r.bottom),
+                  width:Math.round(r.width),height:Math.round(r.height)};
+              };
+              return {
+                menuOverflow:style(menu).overflowY,
+                inspectorOverflow:style(sidebar).overflowY,
+                pageOverflow:style(document.body).overflow,
+                wpbodyOverflow:style(wpbody).overflow,
+                previewOverflow:style(preview).overflow,
+                menu:asRect(menu),sidebar:asRect(sidebar),
+                preview:asRect(preview),iframe:asRect(iframe),
+                viewportHeight:innerHeight
+              };
+            });
+            console.log('BUILDER_SCROLL_LAYOUT_QA='+JSON.stringify(layoutAudit));
+            if (layoutAudit.menuOverflow!=='auto' ||
+                layoutAudit.inspectorOverflow!=='auto' ||
+                layoutAudit.wpbodyOverflow!=='hidden' ||
+                layoutAudit.previewOverflow!=='hidden' ||
+                layoutAudit.pageOverflow!=='hidden')
+              throw Error('Builder independent scrolling styles missing: '+JSON.stringify(layoutAudit));
+            if (layoutAudit.iframe.height<300 ||
+                layoutAudit.sidebar.bottom>layoutAudit.viewportHeight+3 ||
+                layoutAudit.iframe.bottom>layoutAudit.viewportHeight+3 ||
+                Math.abs(layoutAudit.iframe.height-layoutAudit.preview.height)>3)
+              throw Error('Builder preview/inspector height exceeds the workspace: '+JSON.stringify(layoutAudit));
+            const frameEl = await page.$('#esc-vb-frame');
+            const frameSrc = await frameEl.evaluate(el => el.getAttribute('src'));
+            if (!frameSrc || !frameSrc.includes('/esc-builder/preview/')) throw Error('Missing Builder preview URL');
+            const frame = await frameEl.contentFrame();
+            if (!frame) throw Error('Builder iframe was blocked by browser policy');
+            await new Promise(r => setTimeout(r, 1800));
+            console.log('BUILDER_PAGE_53390_DIAGNOSTICS=' + JSON.stringify({frameUrlPath:new URL(frame.url()).pathname,frameTitle:await frame.title(),text:(await frame.evaluate(()=>document.body?.innerText||'')).slice(0,450),iframeResponses}));
+            await new Promise(r => setTimeout(r, 3500));
+            const imageAudit = await frame.evaluate(() => Array.from(document.images).slice(0,40).map(img => {
+              const url = new URL(img.currentSrc || img.src || '', location.href);
+              return {host:url.host,path:url.pathname.slice(0,180),naturalWidth:img.naturalWidth,complete:img.complete};
+            }));
+            console.log('BUILDER_IMAGE_HTTP_DIAGNOSTICS=' + JSON.stringify({
+              resources:responseAudit.slice(-60), requests:resourceFailures.slice(-20),
+              images:imageAudit
+            }));
+            await page.screenshot({path:'reports/esc-vb-page-53390.png',fullPage:false});
+            await frame.waitForSelector('main [data-tablepress-preview], main section', {timeout: 45000});
+            const initialLiveStatus=await frame.evaluate(() =>
+              document.querySelector('[data-esc-builder-refresh-status]')?.textContent?.trim() || '');
+            if (!initialLiveStatus) throw Error('Initial Builder did not expose live source status');
+            if (initialLiveStatus.includes('Một số nguồn chưa đồng bộ được'))
+              throw Error('Builder first load has stale dependencies: '+initialLiveStatus.slice(0,320));
+            const count = await frame.$$eval('[data-tablepress-preview]', els => els.length);
+            const clickable = await frame.$('[data-tablepress-preview]') || await frame.$('main section');
+            if (!clickable) throw Error('No selectable section in iframe');
+            await clickable.evaluate(el => el.scrollIntoView({block:'center'}));
+            await clickable.click({delay:50});
+            await page.waitForFunction(() => {
+              const v=document.querySelector('#esc-vb-inspector')?.textContent || '';
+              return v.includes('"source"');
+            }, {timeout:15000});
+            const inspector = await page.$eval('#esc-vb-inspector', el=>el.textContent);
+            // Phase 2A/2C: exercise a local draft then Cancel, never writing
+            // any live customer value during automated Chrome QA.
+            if (JSON.parse(inspector).tableId === 'home_00') {
+              await page.waitForFunction(() => {
+                const panel=document.getElementById('esc-vb-text-editor');
+                const rows=document.getElementById('esc-vb-edit-row');
+                const input=document.getElementById('esc-vb-edit-title');
+                return panel?.style.display==='block' && rows?.options.length>0 &&
+                  input && !input.disabled;
+              },{timeout:35000});
+              const originalTitle=await page.$eval('#esc-vb-edit-title',el=>el.value);
+              await page.$eval('#esc-vb-edit-title',el=>{
+                el.value+=' QA draft';
+                el.dispatchEvent(new Event('input',{bubbles:true}));
+              });
+              const draftEnabled=await page.$eval('#esc-vb-edit-save',el=>!el.disabled);
+              if(!draftEnabled) throw Error('Builder title draft did not enable Save');
+              await page.click('#esc-vb-edit-cancel');
+              const restored=await page.$eval('#esc-vb-edit-title',el=>el.value);
+              const stillEnabled=await page.$eval('#esc-vb-edit-save',el=>!el.disabled);
+              if(restored!==originalTitle || stillEnabled)
+                throw Error('Builder Cancel did not restore the original title');
+              console.log('BUILDER_TITLE_DRAFT_QA='+JSON.stringify({
+                editorVisible:true,localDraftEnabledSave:true,cancelRestored:true,
+                customerDataWritten:false
+              }));
+            }
+            // Exercise multiple locally committed title overlays without writing
+            // anything to WordPress. Only the real Save button is allowed to POST.
+            if (JSON.parse(inspector).tableId === 'home_00') {
+              const sourceTitle = await page.$eval('#esc-vb-edit-title', el=>el.value);
+              const activeRow = await page.$eval('#esc-vb-edit-row', el=>Number(el.value));
+              const previewTarget = '[QA in-memory] ' + sourceTitle;
+              const beforePreviewURL = frame.url();
+              await page.evaluate(({activeRow,sourceTitle,previewTarget,origin}) => {
+                const previewFrame = document.querySelector('#esc-vb-frame');
+                // postMessage targetOrigin is the destination iframe Astro origin,
+                // not the sending WordPress admin origin.
+                previewFrame?.contentWindow?.postMessage({
+                  type:'esc-vb-title-saved',tableId:'home_00',row:activeRow,
+                  original:sourceTitle,value:previewTarget
+                },new URL(previewFrame.src).origin);
+              }, {activeRow,sourceTitle,previewTarget,origin});
+              await frame.waitForFunction(value =>
+                document.querySelector('[data-esc-builder-local-saves]')?.textContent?.includes(value),
+                {timeout:10000},previewTarget);
+              const nextRow = await page.$eval('#esc-vb-edit-row', el => {
+                const candidate=[...el.options].find(o=>Number(o.value)!==Number(el.value));
+                return candidate?.value || null;
+              });
+              if (nextRow !== null) await page.select('#esc-vb-edit-row',nextRow);
+              const persisted = await frame.evaluate(value =>
+                document.querySelector('[data-esc-builder-local-saves]')?.textContent?.includes(value),
+                previewTarget);
+              if (!persisted || frame.url()!==beforePreviewURL)
+                throw Error('Saved preview overlay disappeared on row switch or navigated the iframe');
+              await page.evaluate(({activeRow,sourceTitle,previewTarget,origin}) => {
+                const previewFrame = document.querySelector('#esc-vb-frame');
+                previewFrame?.contentWindow?.postMessage({
+                  type:'esc-vb-title-saved',tableId:'home_00',row:activeRow,
+                  original:previewTarget,value:sourceTitle
+                },new URL(previewFrame.src).origin);
+              }, {activeRow,sourceTitle,previewTarget,origin});
+              await frame.waitForFunction(value =>
+                !document.querySelector('[data-esc-builder-local-saves]')?.textContent?.includes(value),
+                {timeout:10000},'[QA in-memory]');
+              console.log('BUILDER_SAVED_OVERLAY_QA='+JSON.stringify({
+                localPatchVisible:true,retainedAcrossRowChange:true,
+                iframeReloaded:false,restoredOriginalInMemory:true,
+                customerDataWritten:false
+              }));
+            }
+            const controls = await page.$$('.esc-vb-size');
+            if (controls.length !== 2) throw Error('Desktop/Mobile controls missing');
+            await controls[1].click();
+            const mobileWidth = await frameEl.evaluate(el=>Math.round(el.getBoundingClientRect().width));
+            if (Math.abs(mobileWidth - 390) > 2) throw Error('Mobile width was not 390px: ' + mobileWidth);
+            await controls[0].click();
+            const desktopWidth = await frameEl.evaluate(el=>Math.round(el.getBoundingClientRect().width));
+            if (desktopWidth < 750) throw Error('Desktop iframe unexpectedly narrow: '+desktopWidth);
+            await page.screenshot({path:'reports/esc-visual-builder-admin.png',fullPage:false});
+            console.log('ESC_VISUAL_BUILDER_QA=' + JSON.stringify({
+              wpAdminHTTP:adminResponse.status(), hasAstroFrame:true,
+              escTableWrappers:count, inspector:JSON.parse(inspector),
+              mobileWidth,desktopWidth,pageErrors:failures.slice(0,6)
+            }));
+            const critical503 = responseAudit.filter(x => x.status === 503 &&
+              x.host === 'xuongmunonbaohiem.io.vn' &&
+              ['stylesheet', 'script', 'font', 'image'].includes(x.type));
+            if (critical503.length) throw Error('Builder loaded with broken static resources: ' + JSON.stringify(critical503.slice(0,10)));
+            const firstImage = imageAudit.find(x => x.path === '/wp-content/uploads/2026/09/bluesea.png');
+            if (firstImage && firstImage.naturalWidth === 0) throw Error('Builder Blue Sea logo did not load');
+            if (count === 0) throw Error('No ESC Table wrappers; cannot verify ESC Table section mapping');
+            if (JSON.parse(inspector).source !== 'ESC Table' || !JSON.parse(inspector).tableId) throw Error('Inspector did not resolve source as ESC Table');
+            // Regression: the 120-second ticket used to expire while the editor
+            // remained open. Renewal must update iframe history without reload.
+            // Only an explicit click on the WordPress refresh button may fetch a
+            // section. Two consecutive refreshes must both survive the reload.
+            async function chooseTable(id) {
+              const table = await frame.$('[data-tablepress-preview="' + id + '"]');
+              if (!table) throw Error('Missing selectable Builder ESC Table ' + id);
+              await table.evaluate(el => el.scrollIntoView({block:'center'}));
+              await table.click({delay:40});
+              await page.waitForFunction(expected => {
+                const val=document.querySelector('#esc-vb-inspector')?.textContent || '';
+                return val.includes('"tableId": "' + expected + '"');
+              }, {timeout:10000}, id);
+            }
+            const initialUrl=frame.url();
+            await chooseTable('home_00');
+            await new Promise(r=>setTimeout(r,1200));
+            if (frame.url()!==initialUrl) throw Error('Selecting home_00 unexpectedly refreshed the iframe');
+            const waitForManualRefresh = ids => page.waitForResponse(result => {
+              try {
+                const u=new URL(result.url());
+                return result.request().isNavigationRequest() &&
+                  u.pathname===new URL(frame.url()).pathname &&
+                  u.searchParams.get('refresh_tables')===ids;
+              } catch {return false;}
+            }, {timeout:60000});
+            let nextDocument=waitForManualRefresh('home_00');
+            await page.click('#esc-vb-refresh-section');
+            let response=await nextDocument;
+            console.log('FIRST_REFRESH_STATUS='+response.status());
+            await frame.waitForSelector('[data-esc-builder-refresh-status]',{timeout:20000});
+            const firstRefreshAudit = {
+              status:response?.status() ?? null,
+              page:new URL(response?.url() || frame.url()).pathname,
+              refreshTables:new URL(response?.url() || frame.url()).searchParams.get('refresh_tables'),
+              legacyTable:new URL(response?.url() || frame.url()).searchParams.get('refresh_table'),
+              refreshStatus:response?.headers()?.['x-esc-builder-section-refresh'] ?? null,
+              tablesHeader:response?.headers()?.['x-esc-builder-sections-updated'] ?? null,
+              banner:await frame.$eval('[data-esc-builder-refresh-status]',node=>node.textContent).catch(()=>null)
+            };
+            console.log('BUILDER_FIRST_MANUAL_REFRESH_DIAGNOSTICS=' + JSON.stringify(firstRefreshAudit));
+            if (firstRefreshAudit.status!==200 || firstRefreshAudit.tablesHeader!=='home_00')
+              throw Error('First manual refresh unexpected response: '+JSON.stringify(firstRefreshAudit));
+            const afterFirst=frame.url();
+            await chooseTable('home_01');
+            await new Promise(r=>setTimeout(r,1200));
+            if (frame.url()!==afterFirst) throw Error('Selecting home_01 unexpectedly refreshed the iframe');
+            // home_01 H2 comes from table.name, not six image-row title cells.
+            // Never write customer text during QA: draft, Cancel and mock local save only.
+            await page.waitForFunction(() => {
+              const select=document.querySelector('#esc-vb-edit-row');
+              return select?.querySelector('option[value="section"]') &&
+                document.querySelector('#esc-vb-edit-title')?.disabled===false;
+            },{timeout:45000});
+            await page.select('#esc-vb-edit-row','section');
+            const h2Original = await frame.$eval('[data-tablepress-preview="home_01"] h2',
+              el=>el.textContent.trim());
+            const storedSection = await page.$eval('#esc-vb-edit-title',el=>el.value.trim());
+            if (h2Original!==storedSection || !h2Original)
+              throw Error('home_01 table.name did not match the rendered section heading');
+            const h2Draft = h2Original + ' [QA section draft]';
+            await page.$eval('#esc-vb-edit-title',(el,value)=>{
+              el.value=value;el.dispatchEvent(new Event('input',{bubbles:true}));
+            },h2Draft);
+            await frame.waitForFunction(value => document.querySelector('[data-tablepress-preview="home_01"] h2')?.textContent?.includes(value),
+              {timeout:12000},h2Draft);
+            if (!(await page.$eval('#esc-vb-edit-save', el=>!el.disabled)))
+              throw Error('Editing section heading did not enable Save');
+            await page.click('#esc-vb-edit-cancel');
+            // postMessage is async across WordPress and the Astro iframe.
+            await frame.waitForFunction(value =>
+              document.querySelector('[data-tablepress-preview="home_01"] h2')?.textContent?.trim()===value,
+              {timeout:12000},h2Original);
+            const headingAfterCancel = await frame.$eval('[data-tablepress-preview="home_01"] h2',el=>el.textContent.trim());
+            if (headingAfterCancel!==h2Original) throw Error('Cancel did not restore section heading');
+            const simulatedSave = h2Original + ' [QA saved heading]';
+            await page.evaluate(({oldText,value}) => {
+              const iframe=document.querySelector('#esc-vb-frame');
+              iframe.contentWindow.postMessage({
+                type:'esc-vb-title-saved',tableId:'home_01',field:'section_title',
+                row:'section',original:oldText,value
+              },new URL(iframe.src).origin);
+            },{oldText:h2Original,value:simulatedSave});
+            await frame.waitForFunction(value => document.querySelector('[data-tablepress-preview="home_01"] h2')?.textContent?.includes(value),
+              {timeout:12000},simulatedSave);
+            await page.evaluate(({oldText,value}) => {
+              const iframe=document.querySelector('#esc-vb-frame');
+              iframe.contentWindow.postMessage({
+                type:'esc-vb-title-saved',tableId:'home_01',field:'section_title',
+                row:'section',original:oldText,value
+              },new URL(iframe.src).origin);
+            },{oldText:simulatedSave,value:h2Original});
+            await frame.waitForFunction(value => document.querySelector('[data-tablepress-preview="home_01"] h2')?.textContent?.trim()===value,
+              {timeout:12000},h2Original);
+            if (frame.url()!==afterFirst) throw Error('Section heading preview caused unexpected reload');
+            console.log('BUILDER_HOME_01_SECTION_HEADING_QA='+JSON.stringify({
+              editorUsesTableName:true,draftRendered:true,cancelRestored:true,
+              localSaveWithoutReload:true,customerDataWritten:false
+            }));
+            nextDocument=waitForManualRefresh('home_00,home_01');
+            await page.click('#esc-vb-refresh-section');
+            response=await nextDocument;
+            await frame.waitForSelector('[data-esc-builder-refresh-status]',{timeout:20000});
+            if (response?.status()!==200 || response.headers()['x-esc-builder-section-refresh']!=='updated')
+              throw Error('Refreshing two tables returned stale or non-200 response');
+            console.log('BUILDER_SECOND_MANUAL_REFRESH_DIAGNOSTICS=' + JSON.stringify({
+              status:response.status(),
+              refreshTables:new URL(response.url()).searchParams.get('refresh_tables'),
+              refreshStatus:response.headers()['x-esc-builder-section-refresh'] ?? null,
+              updatedTables:response.headers()['x-esc-builder-sections-updated'] ?? null
+            }));
+            const updated=(response.headers()['x-esc-builder-sections-updated'] || '').split(',');
+            if (!updated.includes('home_00') || !updated.includes('home_01'))
+              throw Error('Previously refreshed home_00 was lost when home_01 refreshed: '+updated.join(','));
+            const updatedWrappers=await frame.evaluate(() =>
+              [...new Set(Array.from(document.querySelectorAll('[data-tablepress-preview]'),
+                el=>el.getAttribute('data-tablepress-preview')))].filter(Boolean));
+            if (!updatedWrappers.includes('home_00') || !updatedWrappers.includes('home_01'))
+              throw Error('Refreshed tables disappeared from DOM');
+            console.log('BUILDER_TWO_MANUAL_SECTIONS_QA=' + JSON.stringify({
+              selectionsDidNotTriggerRefresh:true, bothSectionsUpdated:updated,
+              preservedInDOM:true
+            }));
+            const initialTicket = new URL(frame.url()).searchParams.get('ticket');
+            await new Promise(r => setTimeout(r, 130000));
+            const rotatedFrameUrl = frame.url();
+            const rotatedTicket = new URL(rotatedFrameUrl).searchParams.get('ticket');
+            if (!initialTicket || !rotatedTicket || rotatedTicket === initialTicket)
+              throw Error('Builder preview ticket was not renewed past 120 seconds');
+            const remainsInteractive = await frame.evaluate(() =>
+              document.documentElement.classList.contains('esc-builder-preview') &&
+              Boolean(document.querySelector('[data-tablepress-preview]')));
+            if (!remainsInteractive) throw Error('Builder iframe lost its DOM during ticket renewal');
+            let refreshedResponse;
+            try {
+              refreshedResponse=await frame.goto(rotatedFrameUrl,{waitUntil:'domcontentloaded',timeout:45000});
+            } catch (error) {
+              const auth=await page.evaluate(async target => {
+                const url=new URL(target);
+                const response=await fetch(location.origin+'/wp-json/esc-builder/v1/verify',{
+                  method:'POST',credentials:'same-origin',
+                  headers:{'Content-Type':'application/json'},
+                  body:JSON.stringify({ticket:url.searchParams.get('ticket'),
+                    page_id:Number(url.pathname.split('/').pop())})
+                });
+                return response.status;
+              },rotatedFrameUrl).catch(()=>0);
+              console.log('BUILDER_FRAME_RELOAD_DIAGNOSTICS='+JSON.stringify({
+                error:String(error.message||error).slice(0,80),
+                wordPressVerifyHTTP:auth,
+                iframeResponses:iframeResponses.slice(-6),
+                httpErrors:responseAudit.slice(-10)
+              }));
+              throw error;
+            }
+            if (!refreshedResponse || refreshedResponse.status() !== 200)
+              throw Error('Builder iframe reload after session renewal HTTP '+(refreshedResponse?.status() ?? 'none'));
+            await frame.waitForSelector('[data-tablepress-preview]', {timeout:20000});
+            console.log('BUILDER_TICKET_130_SECOND_QA=' + JSON.stringify({
+              sessionRenewed:true, originalIframeStayedInteractive:true, iframeReload200:true
+            }));
+            // A fresh visit/F5 must use current WordPress Page and ESC Table
+            // sources rather than silently returning the deployed CMS snapshot.
+            const reloaded=await page.reload({waitUntil:'domcontentloaded',timeout:45000});
+            if (reloaded?.status()!==200) throw Error('Builder WordPress admin F5 was not 200');
+            const afterReload=await (await page.$('#esc-vb-frame')).contentFrame();
+            if (!afterReload) throw Error('Builder iframe missing after F5');
+            await afterReload.waitForSelector('[data-tablepress-preview="home_00"]',{timeout:100000});
+            const freshStatus=await afterReload.evaluate(() =>
+              document.querySelector('[data-esc-builder-refresh-status]')?.textContent?.trim() || '');
+            if (!freshStatus) throw Error('Builder F5 did not report live WordPress source state');
+            if (freshStatus.includes('Một số nguồn chưa đồng bộ được'))
+              throw Error('Builder F5 has stale dependencies: '+freshStatus.slice(0,320));
+            const check=await page.$('#esc-vb-check');
+            const bulk=await page.$('#esc-vb-refresh-all');
+            if (!check || !bulk) throw Error('Bulk detection controls not present');
+            await check.click();
+            await page.waitForFunction(() => {
+              const node=document.querySelector('#esc-vb-source-state');
+              return Boolean(node && /section|ESC Table|đồng bộ|WordPress/.test(node.textContent||''));
+            },{timeout:20000});
+            console.log('BUILDER_F5_LIVE_QA=' + JSON.stringify({
+              adminHTTP:reloaded.status(), sourceReported:true,
+              freshTablesAvailable:true, bulkControls:true
+            }));
+
+          } finally { await browser.close(); }
+          JS
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: esc-visual-builder-browser-qa
+          path: reports/
+          retention-days: 7
+          if-no-files-found: warn

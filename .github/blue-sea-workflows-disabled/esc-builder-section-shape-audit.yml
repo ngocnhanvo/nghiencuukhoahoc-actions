@@ -1,0 +1,164 @@
+name: ESC Builder Page Section Shape Audit
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: ['requests/esc-builder-section-shape-audit.txt']
+permissions:
+  contents: read
+jobs:
+  read-only:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    steps:
+      - name: Resolve WC_URL from ENV_FILE
+        shell: bash
+        env:
+          ENV_FILE: ${{ secrets.ENV_FILE }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import os,re
+          from urllib.parse import urlsplit
+          vals=[]
+          for line in os.environ.get("ENV_FILE","").splitlines():
+              line=line.strip()
+              if line.startswith("export "):line=line[7:].strip()
+              if line.startswith("WC_URL="):
+                  v=line.split("=",1)[1].strip()
+                  if len(v)>=2 and v[0]==v[-1] and v[0] in ("'",'"'):v=v[1:-1]
+                  vals.append(v)
+          if len(vals)!=1:raise SystemExit("Missing or duplicate WC_URL in ENV_FILE")
+          parsed=urlsplit(vals[0]);host=(parsed.hostname or "").lower()
+          if (parsed.scheme!="https" or not re.fullmatch(r"[a-z0-9.-]+",host)
+              or "." not in host or ".." in host or parsed.username or parsed.password
+              or parsed.port not in (None,443) or parsed.path not in ("","/")
+              or parsed.query or parsed.fragment):raise SystemExit("Invalid WC_URL")
+          with open(os.environ["GITHUB_ENV"],"a",encoding="utf8") as f:
+              f.write("WC_URL=https://"+host+"\n")
+          PY
+      - uses: actions/checkout@v4
+        with:
+          repository: ngocnhanvo/xuongmunonbaohiem-php
+          ref: master
+          token: ${{ secrets.SOURCE_REPO_PAT }}
+          persist-credentials: false
+          path: php
+      - name: Inspect WordPress Page shortcode boundaries without content writes
+        env:
+          WP_ADMIN_USERNAME: ${{ secrets.WP_ADMIN_USERNAME }}
+          WP_ADMIN_PASSWORD: ${{ secrets.WP_ADMIN_PASSWORD }}
+        run: |
+          python3 - <<'PY'
+          import os,re,requests
+          from urllib.parse import urlparse
+          for key in ('WC_URL','WP_ADMIN_USERNAME','WP_ADMIN_PASSWORD'):
+              if not os.getenv(key): raise SystemExit('Missing '+key)
+          url=os.environ['WC_URL']
+          base='https://'+urlparse(url if '://' in url else 'https://'+url).hostname
+          s=requests.Session()
+          s.get(base+'/wp-login.php',timeout=20)
+          s.post(base+'/wp-login.php',data={
+            'log':os.environ['WP_ADMIN_USERNAME'],
+            'pwd':os.environ['WP_ADMIN_PASSWORD'],
+            'wp-submit':'Log In','redirect_to':base+'/wp-admin/',
+            'testcookie':'1'
+          },timeout=45)
+          nonce=s.get(base+'/wp-admin/admin-ajax.php?action=rest-nonce',timeout=30).text.strip()
+          if not re.fullmatch(r'[a-zA-Z0-9]{8,20}',nonce):
+            raise SystemExit('REST nonce unavailable')
+          headers={'X-WP-Nonce':nonce}
+          page_ids=[]
+          for slug in ('trang-chu','home','homepage','gioi-thieu','san-pham'):
+              resp=s.get(base+'/wp-json/wp/v2/pages',params={
+                'context':'edit','slug':slug,'per_page':50,'_fields':'id,slug,content'},headers=headers,timeout=45)
+              if resp.ok:
+                page_ids += [p['id'] for p in resp.json()]
+          page_ids=list(dict.fromkeys(page_ids))
+          print('AUDIT_TARGET_IDS',page_ids)
+          for page_id in page_ids:
+              r=s.get(base+'/wp-json/wp/v2/pages/'+str(page_id),
+                params={'context':'edit','_fields':'id,slug,content'},
+                headers=headers,timeout=45)
+              print('PAGE',page_id,'status',r.status_code)
+              if r.status_code!=200:continue
+              obj=r.json()
+              raw=obj.get('content',{}).get('raw','')
+              if obj.get('slug')=='trang-chu':
+                open('/tmp/esc-builder-home-content.raw','w').write(raw)
+              pattern=re.compile(r'\[table\s+id\s*=\s*["\x27]?([a-zA-Z0-9_-]{1,80})(?:["\x27])?\s*/\]',re.I)
+              matches=list(pattern.finditer(raw))
+              gaps=[raw[matches[i].end():matches[i+1].start()] for i in range(len(matches)-1)]
+              if obj.get('slug')=='trang-chu':
+                for i,gap in enumerate(gaps):
+                  tags=[('<' + ('/' if t.startswith('</') else '') + re.match(r'</?([a-zA-Z][\\w:-]*)',t).group(1).lower() + '>') for t in re.findall(r'</?[a-zA-Z][^>]*>',gap)]
+                  print('GAP_TAGS',i,repr(tags),'has_text',bool(re.sub(r'<[^>]*>','',gap).strip()),'bytes',len(gap))
+                  print('GAP_TAG_NAMES',i,re.findall(r'</?[A-Za-z][A-Za-z0-9:-]*',gap))
+              print('PAGE_SECTION_AUDIT',page_id,'slug',obj.get('slug'),
+                'table_count',len(matches),'ids',[m.group(1) for m in matches],
+                'non_whitespace_between',sum(bool(g.strip()) for g in gaps),
+                'gap_html_counts',[len(re.findall(r'<[a-zA-Z]',g)) for g in gaps][:30],
+                'gap_tag_sequences',[[m.group(0).split(' ')[0] for m in re.finditer(r'</?[a-zA-Z][a-zA-Z0-9:-]*',g)][:15] for g in gaps][:18],
+                'prefix_tags',[m.group(0) for m in re.finditer(r'</?[a-zA-Z][a-zA-Z0-9:-]*',raw[:matches[0].start()])][:18] if matches else [],
+                'suffix_tags',[m.group(0) for m in re.finditer(r'</?[a-zA-Z][a-zA-Z0-9:-]*',raw[matches[-1].end():])][:18] if matches else [],
+                'start_html_tags',len(re.findall(r'<[a-zA-Z]',raw[:matches[0].start()])) if matches else 0)
+          PY
+      - name: Verify exact Home Page wrapped section moves in memory, not WordPress
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s /tmp/esc-builder-home-content.raw
+          php -l php/wp-content/plugins/esc-visual-builder/includes/section-order.php
+          php <<'PHP'
+          <?php
+          define('ABSPATH', __DIR__);
+          class WP_Error {
+            public function __construct(public string $code,public string $message=''){}
+            public function get_error_message(){return $this->message;}
+          }
+          class WP_REST_Request {
+            public function __construct(private array $params=[]){}
+            public function get_param($name){return $this->params[$name]??null;}
+          }
+          class TestResponse {
+            public function __construct(public array $data){}
+            public function header($name,$value){}
+          }
+          function rest_ensure_response($value){return new TestResponse($value);}
+          function is_wp_error($obj){return $obj instanceof WP_Error;}
+          function add_action($name,$callback){}
+          function esc_vb_page_text_authorize($req){return $GLOBALS['page'];}
+          function wp_slash($data){return $data;}
+          function wp_update_post($payload,$throw=false){
+            $GLOBALS['page']->post_content=$payload['post_content'];
+            return $payload['ID'];
+          }
+          require 'php/wp-content/plugins/esc-visual-builder/includes/section-order.php';
+          $raw=file_get_contents('/tmp/esc-builder-home-content.raw');
+          $GLOBALS['page']=(object)['ID'=>248,'post_content'=>$raw];
+          $blocks=esc_vb_section_analysis($raw);
+          if(is_wp_error($blocks))throw new RuntimeException($blocks->get_error_message());
+          $ids=array_column($blocks,'id');
+          if(count($blocks)!==14)throw new RuntimeException('Expected exactly 14 original Home Page ESC Table sections');
+          $groups=array_column($blocks,'group');
+          $moveAt=-1;
+          for($i=0;$i<count($groups)-1;$i++){
+            if($groups[$i]===$groups[$i+1]){$moveAt=$i;break;}
+          }
+          if($moveAt<0)throw new RuntimeException('No safely movable sibling section block');
+          $order=$ids;
+          [$order[$moveAt],$order[$moveAt+1]]=[$order[$moveAt+1],$order[$moveAt]];
+          $saved=esc_vb_section_order_save(new WP_REST_Request([
+            'expected_version'=>hash('sha256',$raw),'order'=>$order,
+          ]));
+          if(is_wp_error($saved) || !$saved->data['saved'])throw new RuntimeException('Section move failed');
+          $after=$GLOBALS['page']->post_content;
+          if($after===$raw)throw new RuntimeException('Section move did not change order');
+          $back=esc_vb_section_order_save(new WP_REST_Request([
+            'expected_version'=>hash('sha256',$after),'order'=>$ids,
+          ]));
+          if(is_wp_error($back) || $GLOBALS['page']->post_content!==$raw){
+            throw new RuntimeException('Inverse move did not reproduce identical HTML bytes');
+          }
+          echo 'PASS actual Home Page: 14 sections, safe sibling reorder and byte-exact undo; zero WordPress writes'.PHP_EOL;
+          PHP

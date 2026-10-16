@@ -1,0 +1,3 @@
+# No FTP: source guardrail already deployed and smoke passed in Actions 37837287056.
+# Verify previously unstable 11-turn context with stricter generic comparison assertion.
+intelligence-long-range-session-memory

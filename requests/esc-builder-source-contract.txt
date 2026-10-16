@@ -1,0 +1,14 @@
+One final authenticated integration test after Astro master deploy 215fb4e661b934662aa599cf5c616a77ee851fcc and PHP cbac568d1b7638312df5cea2043ed0e73cae7027. Verify WordPress /changes and /table-source, then Astro iframe refresh_table=home_00 returns HTTP 200 X-ESC-Builder-Section-Refresh=updated; no content modification. 2026-10-09.
+2026-10-10: Post-deploy source contract for Astro PR49 master 2f0a4d3522fb36ae14e9a3da3f03a6a27356efba and PHP master 212c9997a2d76ad5ecd0e779145f9a969e5257dc. Confirm single-table legacy refresh_table still works, table-source protected; do not modify WordPress content.
+2026-10-10: Verify deployed backend page-state and table-batch for homepage with authorized WordPress ticket. Astro still at previous production; verify existing legacy single-table refresh remains 200. Deployment 37999438806 PASS.
+2026-10-10: Verify production WP protected page-layout endpoint, exact Page HTML and revision manifest after PHP master 5f113aa051db87b0d4f91b0e9e3edfd206b8f6fd deploy run 37999840555. Ensure home_00/01 batch and legacy single remain secure. No Astro deploy.
+2026-10-10: Inspect only public TablePress source dependency metadata for home_04..08 to implement live Product/Page source without full WordPress product scan, then keep old contract checks. Avoid dumping private content.
+2026-10-10: ESC Visual Builder phase2 read-only discovery: inspect only column names/types and row counts for home_00, home_01 before implementing typed field edits. Do not write WordPress data.
+2026-10-10: Production source contract phase2 after PHP deploy run 38012449355: assert home_00/01 editor read with WP REST nonce, 403 invalid ticket, stale version 409 and identical-title no-op (no WordPress data writes). Existing live Page and one-section SSR QA retained.
+2026-10-10: Retry phase2 REST editor contract after fixing nonce regex in QA; PHP deploy succeeded; perform only read, stale 409, same-value no-op save.
+2026-10-10: Verify live WordPress home_01 section_title read, stale HTTP409, unchanged save HTTP200; PHP deploy 38027776979 and Astro deploy 38027673306 both PASS. No edits to customer content.
+2026-10-10: Production QA for home_02 text editor after WP FTP PASS 38030303115 and Astro FTP PASS 38030389615; verify five editable fields incl HTML description, reject stale 409, no customer data writes. Astro master 6dd7c5c7 and PHP master 228d63e9.
+
+2026-10-10: Schema-only audit of home_03..13 to safely open text editor. Log metadata names and column keys but no customer text and no writes.
+
+2026-10-10: After PHP FTP PASS 38032726547, validate scoped editable-text for all home_03..home_13 and stale 409; do not modify customer data. Astro master be50e7bd, deployment pending.

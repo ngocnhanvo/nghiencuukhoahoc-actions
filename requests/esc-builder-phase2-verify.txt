@@ -1,0 +1,56 @@
+Verify latest Astro github commit 584b3d05106677a941ab44d6be69e731ac095e91 (17 commits ahead of master), builder direct images, bounded single section refresh, single-flight, WordPress PHP cbac568d1b7638312df5cea2043ed0e73cae7027; earlier QA success pre-final commits. 2026-10-09.
+2026-10-10: Verify Builder ticket renewal + iframe handshake fix, PHP master dbb15a2b4d3604348dbc6c2ead4988737e485ef5 and Astro github 648a50fd09ab60a8602bcecea9435d3cebaf47b7. PHP syntax, focused Vitest and snapshot isolation only; no FTP.
+2026-10-10: Regression for explicit manual-only ESC Table refresh and preservation of home_00/home_01 simultaneously. Verify PHP 38ba6172524cfe4a31872b174301dc9b08aa5ad0 and Astro github fe9acf0e8cea1cbd5cef3cbdc284b675c26fbb6b. Run source tests, not deploy.
+2026-10-10: Verify WordPress live-first Builder implementation PHP c54e394c252d8df1bfad6768d044172e2acea358, Astro github 618eea36170d3f21779de765d2b0b5828f1345e9. Test bounded 4-table batches, fresh F5 after two table saves, API readonly and no full-site cache writes. No deploy until QA passes.
+2026-10-10: Validate live-first HTML layout and ESC Table cache after source changes. PHP master 5f113aa051db87b0d4f91b0e9e3edfd206b8f6fd and Astro github 8738736921a051c012a76e6174fcfa61857a3dd7. Tests include page layout normalizer, live F5 page, bounded table batches, PHP syntax. No deploy.
+2026-10-10: Regression Product-backed home_04..08 only referenced WP products (8 per ESC Table), product dependencies invalidate page-state versions; PHP master 70cbb952de7a027ee7209177018759db6f4cb359, Astro github b78c824173c10e7b64f08148aac42a0a9e7600b6. Focus Vitest new Product hydration, PHP syntax. No deploy until success.
+2026-10-10: Retry transient WordPress /esc-builder/v1/verify timeouts without misclassifying as invalid ticket. Astro dev github 1feaff159bf3c1f47398c3e4d91b0fb3df5263a4, PHP master 70cbb952de7a027ee7209177018759db6f4cb359. Check all focused builder tests and PHP source; no deploy.
+2026-10-10: Visual Builder 2A/2C source verification. WP PHP master title editor read/write and optimistic 409, REST session+nonce, only home_00/home_01 title; Astro github draft text-node preview and cancel. PHP lint all includes, focused Vitest and isolation. No WordPress data mutations or deployments.
+2026-10-10: Final predeploy 2A/2C: PHP lint title editor includes and parse ASTRO + WP UI inline JS from Astro github, test no production writes.
+2026-10-10: Rerun only phase2 JavaScript extraction syntax after workflow regex parser fix; earlier PHP lint and unit tests already passed. No production changes.
+2026-10-10: Verify no-reload Visual Builder save. Source Astro github fcdf65a3 and WordPress PHP master 0efbfc59. Validate existing tests, scripts, WordPress save version guard, ASTRO saved-title local patch; no customer data modifications.
+2026-10-10: Builder latest overlay source QA after Astro github f2dc2aff and PHP master 0efbfc59. Validate tests and inline scripts.
+2026-10-10: Validate home_01 section heading editor source: PHP ESC Table name guard, JS selection and optimistic locking, Astro github inline preview no-reload. Run focused tests before deployment.
+2026-10-10: Verify home_02 text editing: PHP master 228d63e9977a083312c812650cbb883b0824862e and Astro github 5b76bf15209b8e5b30ab9c87bdc95ab1a027e1af; parse inline JS and PHP syntax, preserve prior home_00/home_01 behavior.
+
+2026-10-10: Verify home_03..13 bounded ESC Table text editor, PHP master 580b015b and Astro github c0004c9c. PHP lint, Astro inline JS syntax, focused regression tests. No live writes.
+
+2026-10-10: Verify Visual Builder WordPress Page Editor post_content literal text feature. PHP master a97017a9; Astro github eea2240d. Test bounded HTML token inventory, syntax, UI, Astro preview, existing ESC Table regressions; no customer data writes.
+
+2026-10-10: Retry only after fixing Page editor inline JavaScript URL literal substitution on PHP master 53286f74. Previous run 38037535187 failed parse; PHP syntax and existing image unit tests had passed. Validate Page token fixture and editor syntax; no content writes.
+
+2026-10-10: Verify Page Editor manifest caching on PHP master c96ea7d0, no repeated GET per click; existing Astro preview untouched. Run PHP lint and inline JS parser regression.
+
+2026-10-10: Verify Astro github 3bcb5f44 Form LABEL and leaf text click detection for WordPress Editor. PHP manifest cache deployed PASS 38038641396. Focused regressions, no customer writes.
+
+2026-10-10: Verify partial selection on Page Editor text (PHP master f0cccd0e, Astro github 802f908c), preserve HTML entities, exact node index matching, unchanged ESC Tables, PHP lint/JS unit tests. No customer content writes.
+
+2026-10-10: Rerun only isolated Page text replacement fixture after adding esc_html stub; original run 38039747323 passed syntax/JS/unit tests but isolated PHP fixture missed WP stub. Do not change customer data.
+
+2026-10-10: Verify final Astro github c5c8dd59 selection anchored by document Range after mousedown/mouseup, safe tokenizer alignment; PHP master f0cccd0e already verified in 38039816851. No customer data writes.
+
+2026-10-10: Verify precise Editor selection fixes after Chrome run 38040295965: PHP master bf31f5b0 null-selection guard, Astro github 7d71991a returns nodeIndex with draft acknowledgement. Check PHP lint, inline JS parse, full source fixtures. No writes.
+
+2026-10-10: Verify full WordPress Editor token displayed in textarea with highlighted selection, preserving surrounding text; PHP master 90964171, Astro github unchanged. Include focused JS helper test, PHP lint and existing regression, no customer writes.
+
+2026-10-10: Retry exact Editor whitespace and partial replacement fixtures after correcting double-backslash regexp in PHP master 806a7e8a. Source test 38041829641 caught front/back indentation bug; rerun before FTP.
+
+2026-10-10: Verify homepage home_02 video-title field hint: Astro github 470b87d5, WordPress PHP master b403f2b3. Exact field marker and click/drag routing tests. Preserve existing ESC Table/Page Editor behavior and do not write customer content.
+
+2026-10-10: Verify home_01 image picker MVP: PHP master f8e6c9b6, Astro github a50f698c. Assert PHP image cell schema URL/single IMG, media REST security, srcset preservation, JS modal syntax, iframe click/preview/cancel handlers; no WP customer writes or deployment until source PASS.
+
+2026-10-10: Retry source QA home_01 image editor after correcting malformed Actions YAML in 6b595db0. Only lint/source fixtures; no customer data or deployment.
+
+2026-10-10: Revalidate home_01 on PHP master f30739ff: six IMG cells actually store root-relative /wp-content/uploads paths, so API now normalizes for preview but preserves relative src on save. Test relative URL parsing, HTML preservation, text regression; no WP data writes.
+
+2026-10-10: Verify PHP master 11f41606: WordPress Media returns id integer and root-relative /wp-content/uploads URL; UI resolves same-origin HTTPS before iframe preview, server esc_vb_image_public_url also normalizes relative wp_get_attachment_url before hash/version save. Chrome diagnostic 38047128279; run PHP lint + JS parser before FTP.
+
+2026-10-10: Verify read-only image SEO UI for home_01. PHP master d1196041: selected image row exposes ESC Table HTML alt plus WordPress Media alt/title/caption/description, and sidebar displays current vs pending Media metadata without writes. Include PHP fixture, inline JS parser, existing text/gallery regressions. No FTP until PASS.
+
+2026-10-10: Verify ALT-only and image+ALT ESC Table home_01 changes, including blank alt, rejecting HTML, preserve img src and attrs, no Media metadata modifications, iframe ALT draft and cancel hooks. PHP master 5b3e84b0 and Astro github 5bf10cb8. Source-only QA; do not deploy or write customer data before PASS.
+
+2026-10-10: Verify generalized static ESC Table images home_02/img, home_09/icon and background, home_11/img, home_13/img with exact row+field+table routing; API home_03..08,10,12 and banner home_00 excluded. PHP master bb312d3f; Astro github 5107166b. Ensure existing home_01 and text regression PASS before FTP.
+
+2026-10-10: Regression after Chrome multi-image QA 38057558797 identified typed ALT input event still used legacy row-only postMessage; corrected PHP master 71199842. Verify ALL three ALT draft dispatch locations carry tableId+field before FTP. Existing Astro remains unchanged.
+
+2026-10-10: Verify home_00 slider banner editable image + ALT from ESC Table, preserve row identity across mobile/desktop filters, sync <picture><source srcset> and IMG, Cancel restores both and preserve home_01..13 regressions. Astro github 3b21ce54, PHP master b9a36399. Source QA only before FTP.

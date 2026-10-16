@@ -1,0 +1,47 @@
+name: ESC Table Advanced Cell Visual Preview QA
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/esc-table-cell-preview-qa.yml'
+      - 'requests/esc-table-cell-preview-qa.txt'
+
+permissions:
+  contents: read
+
+jobs:
+  qa:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 14
+    steps:
+      - name: Checkout WordPress PHP master
+        uses: actions/checkout@v4
+        with:
+          repository: ngocnhanvo/xuongmunonbaohiem-php
+          ref: master
+          token: ${{ secrets.SOURCE_REPO_PAT }}
+          path: source
+          persist-credentials: false
+      - name: Check PHP template syntax and generated markup contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          git -C source rev-parse HEAD
+          php -l source/wp-content/plugins/esc-table/views/view-edit.php
+          node --check source/wp-content/plugins/esc-table/admin/js/esc-cell-visual-preview.js
+          node source/tests/esc-table-cell-preview.test.cjs
+          node source/tests/esc-table-image-attributes.test.cjs
+          echo 'ESC_TABLE_VISUAL_PREVIEW_QA_PASS'
+
+      - name: Install isolated Chromium test runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm install --no-save playwright@1.55.0
+          npx playwright install --with-deps chromium
+      - name: Real browser image attribute editing regression
+        shell: bash
+        run: |
+          set -euo pipefail
+          node source/tests/esc-table-image-attributes.browser.cjs

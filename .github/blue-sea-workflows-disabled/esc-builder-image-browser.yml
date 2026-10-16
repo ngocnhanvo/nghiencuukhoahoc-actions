@@ -1,0 +1,261 @@
+name: ESC Builder home_01 Image Chrome QA
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'requests/esc-builder-image-browser.txt'
+permissions:
+  contents: read
+jobs:
+  chrome:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Resolve WC_URL from ENV_FILE
+        shell: bash
+        env:
+          ENV_FILE: ${{ secrets.ENV_FILE }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import os,re
+          from urllib.parse import urlsplit
+          values=[]
+          for line in os.environ.get("ENV_FILE","").splitlines():
+              line=line.strip()
+              if line.startswith("export "): line=line[7:].strip()
+              if line.startswith("WC_URL="):
+                  val=line.partition("=")[2].strip()
+                  if len(val)>1 and val[0]==val[-1] and val[0] in ("'",'"'): val=val[1:-1]
+                  values.append(val)
+          if len(values)!=1: raise SystemExit("Exactly one WC_URL required in ENV_FILE")
+          url=urlsplit(values[0]);host=(url.hostname or "").lower()
+          if (url.scheme!="https" or not re.fullmatch(r"[a-z0-9.-]+",host)
+                  or "." not in host or ".." in host or url.username or url.password
+                  or url.port not in (None,443) or url.path not in ("","/")
+                  or url.query or url.fragment): raise SystemExit("Invalid WC_URL")
+          with open(os.environ["GITHUB_ENV"],"a",encoding="utf8") as out:
+              out.write("WC_URL=https://"+host+"\n")
+          PY
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - uses: browser-actions/setup-chrome@v2
+        id: chrome
+        with:
+          chrome-version: stable
+      - run: npm install --no-save --no-package-lock puppeteer-core@24
+      - name: Test image selection preview and Cancel without WordPress saves
+        env:
+          WP_ADMIN_USERNAME: ${{ secrets.WP_ADMIN_USERNAME }}
+          WP_ADMIN_PASSWORD: ${{ secrets.WP_ADMIN_PASSWORD }}
+          CHROME_PATH: ${{ steps.chrome.outputs.chrome-path }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --input-type=module <<'JS'
+          import puppeteer from 'puppeteer-core';
+          const root=new URL(process.env.WC_URL).origin;
+          const browser=await puppeteer.launch({
+            executablePath:process.env.CHROME_PATH,headless:true,
+            args:['--no-sandbox','--disable-dev-shm-usage']
+          });
+          try{
+            const page=await browser.newPage();
+            await page.setViewport({width:1440,height:900,deviceScaleFactor:1});
+            const writes=[];
+            const errors=[];
+            page.on('pageerror',e=>errors.push(String(e.message).slice(0,200)));
+            page.on('request',r=>{
+              try{if(new URL(r.url()).pathname.endsWith('/esc-builder/v1/save-image'))
+                writes.push(r.method());}catch{}
+            });
+            async function go(url){
+              let error;
+              for(let i=0;i<2;i++){
+                try{
+                  const response=await page.goto(url,{waitUntil:'domcontentloaded',timeout:i?65000:45000});
+                  if(response?.status()===200)return;
+                  error=Error('HTTP '+response?.status());
+                }catch(e){error=e;}
+                await new Promise(r=>setTimeout(r,1500));
+              }
+              throw error;
+            }
+            await go(root+'/wp-login.php');
+            await page.waitForSelector('#user_login',{timeout:20000});
+            await page.type('#user_login',process.env.WP_ADMIN_USERNAME);
+            await page.type('#user_pass',process.env.WP_ADMIN_PASSWORD);
+            await Promise.all([
+              page.waitForNavigation({waitUntil:'domcontentloaded',timeout:45000}).catch(()=>{}),
+              page.click('#wp-submit')
+            ]);
+            if(page.url().includes('/wp-login.php'))throw Error('WP login failed');
+            await go(root+'/wp-admin/admin.php?page=esc-visual-builder');
+            await page.waitForSelector('#esc-vb-frame',{timeout:20000});
+            const frame=await (await page.$('#esc-vb-frame')).contentFrame();
+            if(!frame)throw Error('Builder iframe unavailable');
+            await frame.waitForSelector('[data-tablepress-preview="home_01"] [data-esc-builder-image-row="0"] img',{timeout:100000});
+            const frameUrl=frame.url();
+            const imgSelector='[data-tablepress-preview="home_01"] [data-esc-builder-image-row="0"] img';
+            const original=await frame.$eval(imgSelector,img=>({
+              src:img.getAttribute('src'),srcset:img.getAttribute('srcset'),
+              alt:img.getAttribute('alt')
+            }));
+            const oldBackground=await frame.$eval('[data-esc-builder-gallery-background="home_01"]',el=>el.getAttribute('srcset'));
+            const first=await frame.$('[data-esc-builder-image-row="0"] img');
+            await first.evaluate(el=>el.scrollIntoView({block:'center'}));
+            await first.click({delay:40});
+            await page.waitForFunction(()=>
+              document.querySelector('#esc-vb-image-editor')?.style.display==='block' &&
+              !document.querySelector('#esc-vb-image-choose')?.disabled &&
+              (document.querySelector('#esc-vb-image-caption')?.textContent||'').includes('1 / 6'),
+              {timeout:45000});
+            const source=await page.$eval('#esc-vb-image-preview',el=>el.getAttribute('src'));
+            if(!source || !source.startsWith('https://'))throw Error('Media preview source invalid');
+            await page.waitForFunction(()=>{
+              const panel=document.getElementById('esc-vb-image-seo');
+              return panel?.style.display==='block' &&
+                ['html-alt','media-alt','title','caption','description'].every(key=>{
+                  const el=document.getElementById('esc-vb-seo-'+key);
+                  return !!(key==='html-alt' ? el?.value?.trim() : el?.textContent?.trim());
+                });
+            },{timeout:15000});
+            const originalSeo=await page.evaluate(()=>({
+              alt:document.getElementById('esc-vb-seo-html-alt').value,
+              mediaAlt:document.getElementById('esc-vb-seo-media-alt').textContent,
+              status:document.getElementById('esc-vb-seo-status').textContent
+            }));
+            // ALT-only: textarea shows the actual ESC Table ALT. Preview
+            // updates the image attribute and enables Save with no Media change.
+            if(originalSeo.alt!==original.alt)
+              throw Error('ALT textarea does not match the actual gallery IMG ALT');
+            const altOnlyDraft='__ESC_BUILDER_ALT_QA_ONLY__';
+            await page.$eval('#esc-vb-seo-html-alt',(el,value)=>{
+              el.value=value;
+              el.dispatchEvent(new Event('input',{bubbles:true}));
+            },altOnlyDraft);
+            await frame.waitForFunction(({selector,value})=>
+              document.querySelector(selector)?.getAttribute('alt')===value,
+              {timeout:12000},{selector:imgSelector,value:altOnlyDraft});
+            await page.waitForFunction(()=>!document.querySelector('#esc-vb-image-save')?.disabled,
+              {timeout:12000});
+            if(await frame.$eval(imgSelector,el=>el.getAttribute('src'))!==original.src)
+              throw Error('ALT-only draft unexpectedly changed gallery image');
+            await page.click('#esc-vb-image-cancel');
+            await frame.waitForFunction(({selector,alt})=>
+              document.querySelector(selector)?.getAttribute('alt')===alt,
+              {timeout:12000},{selector:imgSelector,alt:original.alt});
+            if(await page.$eval('#esc-vb-seo-html-alt',el=>el.value)!==originalSeo.alt)
+              throw Error('ALT-only Cancel failed to restore textarea');
+            await page.click('#esc-vb-image-choose');
+            await page.waitForSelector('.media-modal',{visible:true,timeout:20000});
+            await page.waitForFunction(()=>document.querySelectorAll('.media-modal .attachments .attachment').length>1,
+              {timeout:50000});
+            const attachments=await page.$$('.media-modal .attachments .attachment');
+            await attachments[Math.min(1,attachments.length-1)].click({delay:40});
+            await page.waitForFunction(()=>!document.querySelector('.media-modal .media-button-select')?.disabled,
+              {timeout:12000});
+            const attachmentInfo=await page.evaluate(()=>{
+              const wp=window.wp;
+              const frame=wp?.media?.frame;
+              const model=frame?.state?.()?.get?.('selection')?.first?.();
+              const a=model?.toJSON?.()||{};
+              const url=String(a.url||'');
+              return {
+                globalFrame:!!frame,selected:!!model,
+                idType:typeof a.id,idInteger:Number.isSafeInteger(a.id),
+                mime:a.mime || '',hasUrl:!!url,
+                urlScheme:url.startsWith('https://')?'https':url.startsWith('http://')?'http':
+                  url.startsWith('/')?'relative':'other',
+                urlHostMatch:(()=>{try{return new URL(url,location.href).host===location.host}catch{return false}})()
+              };
+            });
+            console.log('HOME01_MEDIA_ATTACHMENT_SHAPE='+JSON.stringify(attachmentInfo));
+            await page.click('.media-modal .media-button-select');
+            await new Promise(r=>setTimeout(r,2000));
+            const diagnostics=await page.evaluate(()=>{
+              const img=document.getElementById('esc-vb-image-preview');
+              const url=img?.getAttribute('src')||'';
+              const old=document.getElementById('esc-vb-image-feedback');
+              return {
+                panelVisible:document.getElementById('esc-vb-image-editor')?.style.display,
+                chooseDisabled:document.getElementById('esc-vb-image-choose')?.disabled,
+                saveDisabled:document.getElementById('esc-vb-image-save')?.disabled,
+                cancelDisabled:document.getElementById('esc-vb-image-cancel')?.disabled,
+                imgScheme:url.startsWith('https://')?'https':url.startsWith('http://')?'http':'other',
+                feedback:(old?.textContent||'').slice(0,230)
+              };
+            });
+            console.log('HOME01_IMAGE_MEDIA_DIAGNOSTIC='+JSON.stringify(diagnostics));
+            await page.waitForFunction(()=>!document.querySelector('#esc-vb-image-save')?.disabled,
+              {timeout:10000});
+            const draftSeo=await page.evaluate(()=>({
+              alt:document.getElementById('esc-vb-seo-html-alt').value,
+              status:document.getElementById('esc-vb-seo-status').textContent
+            }));
+            if(draftSeo.alt!==originalSeo.alt || !draftSeo.status.includes('chưa lưu'))
+              throw Error('Pending Media SEO preview changed actual ESC Table alt or lost draft status');
+            const draft=await frame.$eval(imgSelector,img=>({
+              src:img.getAttribute('src'),srcset:img.getAttribute('srcset')
+            }));
+            if(!draft.src || draft.src===original.src || draft.srcset)
+              throw Error('Gallery image draft did not replace old src/srcset');
+            // Combined image + ALT draft must preserve the previewed image
+            // and unlock the same Save WordPress button.
+            const combinedAlt='__ESC_BUILDER_COMBINED_QA_ONLY__';
+            await page.$eval('#esc-vb-seo-html-alt',(el,value)=>{
+              el.value=value;
+              el.dispatchEvent(new Event('input',{bubbles:true}));
+            },combinedAlt);
+            await frame.waitForFunction(({selector,value})=>
+              document.querySelector(selector)?.getAttribute('alt')===value,
+              {timeout:12000},{selector:imgSelector,value:combinedAlt});
+            await page.waitForFunction(()=>!document.querySelector('#esc-vb-image-save')?.disabled,
+              {timeout:12000});
+            if(await frame.$eval(imgSelector,el=>el.getAttribute('src'))!==draft.src)
+              throw Error('ALT draft discarded selected new Media image');
+            const newBackground=await frame.$eval('[data-esc-builder-gallery-background="home_01"]',el=>el.getAttribute('srcset'));
+            if(newBackground!==draft.src)throw Error('First-image background was not updated');
+            await page.click('#esc-vb-image-cancel');
+            await new Promise(r=>setTimeout(r,1000));
+            const rollback=await frame.$eval(imgSelector,img=>({
+              src:img.getAttribute('src'),srcset:img.getAttribute('srcset'),alt:img.getAttribute('alt')
+            }));
+            console.log('HOME01_COMBINED_CANCEL_DIAGNOSTIC='+JSON.stringify({
+              srcRestored:rollback.src===original.src,
+              srcsetRestored:rollback.srcset===original.srcset,
+              altRestored:rollback.alt===original.alt,
+              originalAltPresent:original.alt!==null,
+              draftImgWasDifferent:draft.src!==original.src
+            }));
+            await frame.waitForFunction(({selector,src,srcset,alt})=>{
+              const img=document.querySelector(selector);
+              return img?.getAttribute('src')===src && img.getAttribute('srcset')===srcset &&
+                img.getAttribute('alt')===alt;
+            },{timeout:12000},{selector:imgSelector,...original});
+            const restoredSeo=await page.evaluate(()=>({
+              alt:document.getElementById('esc-vb-seo-html-alt').value,
+              mediaAlt:document.getElementById('esc-vb-seo-media-alt').textContent,
+              status:document.getElementById('esc-vb-seo-status').textContent
+            }));
+            if(restoredSeo.alt!==originalSeo.alt ||
+               restoredSeo.mediaAlt!==originalSeo.mediaAlt ||
+               restoredSeo.status!==originalSeo.status)
+              throw Error('SEO metadata did not restore after Cancel');
+            const restoredBackground=await frame.$eval('[data-esc-builder-gallery-background="home_01"]',el=>el.getAttribute('srcset'));
+            if(restoredBackground!==oldBackground)throw Error('Gallery background did not restore after Cancel');
+            if(frame.url()!==frameUrl)throw Error('Gallery preview unexpectedly reloaded iframe');
+            if(writes.length)throw Error('Chrome QA must not write customer gallery data');
+            if(errors.length)throw Error('Page JS errors: '+errors.join('; '));
+            console.log('HOME01_IMAGE_CHROME_PASS='+JSON.stringify({
+              imageSelected:true,mediaLibraryOpened:true,
+              previewImmediate:true,srcsetCleared:true,
+              backgroundSynced:true,cancelRestored:true,
+              seoFieldsVisible:true,seoPreviewSynced:true,seoCancelRestored:true,
+              altOnlyPreview:true,altOnlySaveEnabled:true,combinedImageAltPreview:true,
+              iframeReloaded:false,customerWrites:0
+            }));
+          }finally{await browser.close();}
+          JS

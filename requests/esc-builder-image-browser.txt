@@ -1,0 +1,16 @@
+2026-10-10: Run live Chrome QA for home_01 gallery image editor after PHP FTP SUCCESS 38046468762 and Astro FTP SUCCESS 38046690221 (Astro master 1800e41d). Click first gallery image, verify six-row editor loads, WordPress Media modal opens and selecting an existing different photo updates gallery/background immediately, Cancel restores original, iframe not reloaded, no save-image POST or customer writes.
+2026-10-10: Diagnose gallery Chrome QA run 38046787655 where Save remained disabled after selecting Media. Log control states and URL scheme only (no user content or media URLs), no WordPress writes. Do not repeat deployments.
+
+2026-10-10: Diagnose WordPress Media attachment type, URL scheme and host before selecting (Chrome run 38046982295 had Media picker valid but image rejected by URL/ID guard). No URLs or content printed and no saves.
+
+2026-10-10: Resume final Chrome QA once after PHP master 11f4160642e03fb1605f21cdf346273869d62ae3 URL normalization and FTP PASS run 38047397153; preceding Chrome run 38047128279 was before PHP correction. Verify Media selected image preview, gallery background, Cancel, no WP writes, no iframe reload. Do not rerun deploy or source checks.
+
+2026-10-10: Final read-only Chrome production QA after image SEO PHP FTP SUCCESS run 38052577614 and API contract SUCCESS 38052695827 (attachment linked true). Check SEO fields visible on first home_01 image, preview new Media SEO, Cancel restores original Alt and metadata, no iframe reload/no save POST/no customer content writes. Do not redeploy.
+
+2026-10-10: Final Chrome QA after WP PHP FTP success 38053939423 and Astro FTP success 38054375214. Verify home_01 editable ESC Table ALT textarea, ALT-only draft (no image change), combined Media image+ALT draft, Save button correctly enabled, Cancel restores IMG src/srcset/alt, no iframe reload or WP saves. Do not repeat deployments or write customer data.
+
+2026-10-10: Retry ALT Chrome browser QA after correcting form-field assertion (run 38054509682 timed out waiting for textarea textContent rather than value). Production PHP/Astro FTP already PASS; no repeated deploy, no customer writes.
+
+2026-10-10: Retry Chrome ALT-only+combined draft after correcting remaining obsolete textarea textContent pending SEO check; previous run 38054672490 passed ALT-only interaction but failed QA assertion, no customer writes. PHP/Astro already FTP deployed.
+
+2026-10-10: Diagnose combined Media+ALT Cancel after Chrome 38054835406 timeout in multi-attribute restore. Log only equality flags of img src/srcset/alt against before-draft snapshots, no content/URL logging, no save POST. Do not redeploy until exact attribute issue identified.

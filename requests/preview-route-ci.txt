@@ -1,0 +1,1 @@
+Verify final Astro github 584b3d05106677a941ab44d6be69e731ac095e91 in FTP-layout SSR; public /preview remains WordPress live, Builder forbidden without ticket and source refresh code does not write shared cache. 2026-10-09.

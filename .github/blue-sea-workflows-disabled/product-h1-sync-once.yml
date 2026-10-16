@@ -1,0 +1,244 @@
+name: Blue Sea Verified Legacy H1 Sync
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: Preview first (no data changes), or apply 160 verified H1 values
+        type: choice
+        required: true
+        default: preview
+        options:
+          - preview
+          - apply
+  push:
+    branches: [main]
+    paths:
+      - 'requests/product-h1-sync-once.txt'
+permissions:
+  contents: read
+concurrency:
+  group: blue-sea-product-h1-sync-once
+  cancel-in-progress: false
+jobs:
+  sync:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Resolve WC_URL from ENV_FILE
+        env:
+          ENV_FILE: ${{ secrets.ENV_FILE }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import os, re
+          from urllib.parse import urlsplit
+          vals = []
+          for line in os.environ.get("ENV_FILE", "").splitlines():
+              line = line.strip()
+              if line.startswith("export "): line = line[7:].strip()
+              if line.startswith("WC_URL="):
+                  v = line.split("=", 1)[1].strip()
+                  if len(v) >= 2 and v[0] == v[-1] and v[0] in ("'", '"'): v = v[1:-1]
+                  vals.append(v)
+          if len(vals) != 1: raise SystemExit("Missing or duplicate WC_URL in ENV_FILE")
+          url = urlsplit(vals[0])
+          host = (url.hostname or "").lower()
+          if (url.scheme != "https" or not re.fullmatch(r"[a-z0-9.-]+", host)
+                  or "." not in host or ".." in host or url.username or url.password
+                  or url.port not in (None, 443) or url.path not in ("", "/")
+                  or url.query or url.fragment):
+              raise SystemExit("Invalid WC_URL")
+          with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as f:
+              f.write("WC_URL=https://" + host + "\n")
+          print("Backend host:", host)
+          PY
+      - name: Checkout verified H1 report and mode
+        uses: actions/checkout@v4
+      - name: Validate and prepare exact-slug-only import manifest
+        shell: bash
+        env:
+          REQUEST_MODE: ${{ inputs.mode || '' }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, pathlib, os, html
+          from urllib.parse import urlparse, unquote
+          p=pathlib.Path('requests/product-h1-sync-once.txt')
+          mode=os.environ.get('REQUEST_MODE') or (p.read_text().strip() if p.exists() else 'preview')
+          if mode not in ('preview','apply'): raise SystemExit('Invalid request mode')
+          report=json.loads(pathlib.Path('reports/product-h1-audit.json').read_text(encoding='utf8'))
+          manifest=json.loads(pathlib.Path('reports/product-h1-verified-candidates.json').read_text(encoding='utf8'))
+          wp=urlparse(os.environ['WC_URL'] if '://' in os.environ['WC_URL'] else 'https://'+os.environ['WC_URL'])
+          if report['wp']!='https://'+wp.hostname: raise SystemExit('WordPress hostname differs from audit')
+          if report['wp_products']!=180 or manifest['counts']!={'import_seo_h1':160,'no_change':14,'manual_review':6}: raise SystemExit('Unexpected audited product count')
+          items=[]; seen=set()
+          for row in manifest['products']:
+            product_id=row['id']
+            if product_id in seen: raise SystemExit('Repeated product id')
+            seen.add(product_id)
+            url=urlparse(row['legacy_url'])
+            slug=unquote(url.path.rstrip('/').split('/')[-1]).removesuffix('.html').lower()
+            if url.scheme!='https' or url.hostname!='xuongmunonbaohiem.com' or slug!=row['slug'].lower(): raise SystemExit('URL mismatch ID '+str(product_id))
+            title=html.unescape(row['title']).strip()
+            h1=html.unescape(row['seo_h1']).strip()
+            if not h1.startswith(title+' - ') or len(h1)>255: raise SystemExit('Invalid source H1 ID '+str(product_id))
+            items.append({'id':product_id,'slug':row['slug'],'title':title,'h1':h1})
+          if len(items)!=160: raise SystemExit('Expected 160 verified H1 values')
+          pathlib.Path('/tmp/esc-h1-plan.json').write_text(json.dumps({'items':items},ensure_ascii=False),encoding='utf8')
+          pathlib.Path('/tmp/esc-h1-mode').write_text(mode)
+          print(f'Prepared {len(items)} verified H1 values; 14 exact-title and 6 manual-review items excluded; mode={mode}')
+          PY
+      - name: Prepare short-lived guarded PHP importer
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > /tmp/esc-h1-importer.php <<'PHP'
+          <?php
+          // Disposable one-time metadata import, never committed to WordPress.
+          declare(strict_types=1);
+          if (time() > __TOKEN_EXPIRY__ || ($_SERVER['REQUEST_METHOD'] ?? '') !== 'POST' ||
+              !hash_equals('__TOKEN_HASH__', hash('sha256', (string)($_SERVER['HTTP_X_ESC_H1_TOKEN'] ?? '')))) {
+              http_response_code(403); exit;
+          }
+          require_once __DIR__ . '/wp-load.php';
+          header('Content-Type: application/json; charset=utf-8');
+          $raw = file_get_contents('php://input');
+          $request = strlen($raw) < 100000 ? json_decode($raw, true) : null;
+          $mode = $_GET['mode'] ?? '';
+          $items = $request['items'] ?? null;
+          $fail = static function ($reason) {
+              http_response_code(409);
+              echo json_encode(['ok' => false, 'reason' => $reason], JSON_UNESCAPED_UNICODE);
+              exit;
+          };
+          if (!in_array($mode, ['preview', 'apply'], true) || !is_array($items) || count($items) !== 160) $fail('Invalid request');
+          $known = []; $pending = []; $already = 0;
+          $norm = static function ($s): string {
+              $s = html_entity_decode(wp_strip_all_tags((string)$s), ENT_QUOTES | ENT_HTML5, 'UTF-8');
+              return trim((string)preg_replace('/\s+/u', ' ', $s));
+          };
+          foreach ($items as $item) {
+              $id = filter_var($item['id'] ?? 0, FILTER_VALIDATE_INT);
+              if (!$id || isset($known[$id])) $fail('Invalid/repeated ID');
+              $known[$id] = true;
+              $post = get_post($id);
+              if (!$post || $post->post_type !== 'product' || $post->post_status !== 'publish') $fail('Missing/unpublished product ID '.$id);
+              if ($post->post_name !== ($item['slug'] ?? '')) $fail('Slug differs for ID '.$id);
+              $title = $norm(get_the_title($id));
+              $expectedTitle = $norm($item['title'] ?? '');
+              if ($title !== $expectedTitle) $fail('Title differs for ID '.$id);
+              $h1 = $norm($item['h1'] ?? '');
+              if (!str_starts_with($h1, $title.' - ') || mb_strlen($h1) > 255) $fail('Invalid H1 for ID '.$id);
+              $current = $norm(get_post_meta($id, 'seo_h1', true));
+              if ($current === $h1) { $already++; continue; }
+              if ($current !== '') $fail('Existing H1 differs; refusing to overwrite ID '.$id);
+              $pending[] = ['id'=>$id,'h1'=>$h1];
+          }
+          if ($mode === 'preview') {
+              echo json_encode(['ok'=>true,'mode'=>$mode,'validated'=>count($items),'would_update'=>count($pending),'already_correct'=>$already]);
+              exit;
+          }
+          global $wpdb;
+          $wpdb->query('START TRANSACTION');
+          foreach ($pending as $item) {
+              $id = $item['id'];
+              if (!update_post_meta($id, 'seo_h1', $item['h1'])) {
+                  $wpdb->query('ROLLBACK'); $fail('Write failed at product ID '.$id);
+              }
+              update_post_meta($id, '_seo_h1', 'field_esc_product_seo_h1');
+              if ($norm(get_post_meta($id, 'seo_h1', true)) !== $item['h1']) {
+                  $wpdb->query('ROLLBACK'); $fail('Verification failed at product ID '.$id);
+              }
+          }
+          $wpdb->query('COMMIT');
+          echo json_encode(['ok'=>true,'mode'=>$mode,'validated'=>count($items),'updated'=>count($pending),'already_correct'=>$already], JSON_UNESCAPED_UNICODE);
+          PHP
+          python3 - <<'PY'
+          import secrets,hashlib,time,pathlib
+          token=secrets.token_hex(32)
+          pathlib.Path('/tmp/esc-h1-token').write_text(token)
+          source=pathlib.Path('/tmp/esc-h1-importer.php')
+          source.write_text(source.read_text().replace('__TOKEN_HASH__',hashlib.sha256(token.encode()).hexdigest()).replace('__TOKEN_EXPIRY__',str(int(time.time())+1200)))
+          pathlib.Path('/tmp/esc-h1-filename').write_text('esc-h1-sync-'+secrets.token_hex(12)+'.php')
+          PY
+          php -l /tmp/esc-h1-importer.php
+      - name: FTP upload guarded one-time entry and preview import
+        shell: bash
+        env:
+          FTP_SERVER: ${{ secrets.FTP_SERVER }}
+          FTP_USERNAME: ${{ secrets.FTP_USERNAME }}
+          FTP_PASSWORD: ${{ secrets.FTP_PASSWORD }}
+          FTP_PROTOCOL: ${{ vars.FTP_PROTOCOL }}
+        run: |
+          set -euo pipefail
+          for key in FTP_SERVER FTP_USERNAME FTP_PASSWORD WC_URL; do test -n "${!key:-}"; done
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq lftp
+          filename="$(cat /tmp/esc-h1-filename)"
+          wp_host="$(python3 - <<'PY'
+          import os
+          from urllib.parse import urlparse
+          raw=os.environ['WC_URL']; print(urlparse(raw if '://' in raw else 'https://'+raw).hostname)
+          PY
+          )"
+          remote_dir="/domains/$wp_host/public_html"
+          proto="${FTP_PROTOCOL:-ftp}"
+          if [[ "$proto" != 'ftp' && "$proto" != 'ftps' && "$proto" != 'sftp' ]]; then exit 1; fi
+          # The cleanup trap is installed BEFORE any upload; never leave the executable on the host.
+          cleanup() {
+            lftp -u "$FTP_USERNAME","$FTP_PASSWORD" "$proto://$FTP_SERVER" <<LFTP || true
+          set cmd:fail-exit yes
+          set ssl:verify-certificate no
+          cd "$remote_dir"
+          rm -f "$filename"
+          bye
+          LFTP
+          }
+          trap cleanup EXIT
+          lftp -u "$FTP_USERNAME","$FTP_PASSWORD" "$proto://$FTP_SERVER" <<LFTP
+          set cmd:fail-exit yes
+          set ssl:verify-certificate no
+          cd "$remote_dir"
+          put /tmp/esc-h1-importer.php -o "$filename"
+          bye
+          LFTP
+          wp_url="https://$wp_host/$filename"
+          token="$(cat /tmp/esc-h1-token)"
+          curl -fsS --connect-timeout 10 --max-time 120 --retry 1 \
+            -H "X-Esc-H1-Token: $token" -H 'Content-Type: application/json' \
+            --data-binary @/tmp/esc-h1-plan.json "$wp_url?mode=preview" -o /tmp/esc-h1-preview.json
+          python3 - <<'PY'
+          import json,pathlib
+          d=json.loads(pathlib.Path('/tmp/esc-h1-preview.json').read_text())
+          print('Server validation: ',d)
+          if not d.get('ok') or d.get('validated')!=160: raise SystemExit('Preview validation failed; WordPress unchanged')
+          PY
+          mode="$(cat /tmp/esc-h1-mode)"
+          if [[ "$mode" == 'apply' ]]; then
+            curl -fsS --connect-timeout 10 --max-time 120 \
+              -H "X-Esc-H1-Token: $token" -H 'Content-Type: application/json' \
+              --data-binary @/tmp/esc-h1-plan.json "$wp_url?mode=apply" -o /tmp/esc-h1-apply.json
+            python3 - <<'PY'
+          import json,pathlib
+          d=json.loads(pathlib.Path('/tmp/esc-h1-apply.json').read_text())
+          print('Import result:',d)
+          if not d.get('ok') or d.get('validated')!=160 or d.get('updated',0)+d.get('already_correct',0)!=160:
+              raise SystemExit('Import did not verify all 160 items')
+          PY
+            echo "Imported only verified H1 metadata. Production Astro build is a separate operation." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "PREVIEW PASS: 160 products server-validated, no WordPress writes." >> "$GITHUB_STEP_SUMMARY"
+          fi
+          # Always run cleanup before finishing. Trap also covers any failure.
+          cleanup
+          trap - EXIT
+          # POST with the valid short-lived token must now return HTTP 404, not 200/403.
+          # A plain GET would return 403 even if cleanup failed and is not adequate proof.
+          status="$(curl -sS -o /dev/null -w '%{http_code}' --connect-timeout 10 --max-time 30 \
+            -H "X-Esc-H1-Token: $token" -H 'Content-Type: application/json' \
+            --data-binary @/tmp/esc-h1-plan.json "$wp_url?mode=preview")"
+          if [[ "$status" != '404' && "$status" != '410' ]]; then
+            echo "Temporary PHP cleanup could not be verified (HTTP $status)"; exit 1
+          fi
+          echo "Temporary importer removal verified via authenticated POST: HTTP $status" >> "$GITHUB_STEP_SUMMARY"

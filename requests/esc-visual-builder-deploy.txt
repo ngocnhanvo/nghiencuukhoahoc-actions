@@ -1,0 +1,3 @@
+Deploy Blue Sea ESC Visual Builder cross-page image enhancements.
+PHP source master=ce82f85218a1439d88e06dd0803435b90a78d62a
+Includes site-config.php, page-image.php, all scoped WordPress writer guardrails, QA PASS 38069698051. No Astro build in this workflow.

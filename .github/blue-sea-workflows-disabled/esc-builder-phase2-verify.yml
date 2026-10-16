@@ -1,0 +1,367 @@
+name: ESC Builder Phase 2 Code Verification
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'requests/esc-builder-phase2-verify.txt'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: esc-builder-phase2-verify
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Require source access token
+        env:
+          SOURCE_REPO_PAT: ${{ secrets.SOURCE_REPO_PAT }}
+        run: test -n "$SOURCE_REPO_PAT"
+      - uses: actions/checkout@v4
+        with:
+          repository: ngocnhanvo/xuongmunonbaohiem-php
+          ref: master
+          token: ${{ secrets.SOURCE_REPO_PAT }}
+          path: backend
+          persist-credentials: false
+      - name: Verify PHP source and syntax
+        shell: bash
+        run: |
+          set -euo pipefail
+          git -C backend rev-parse HEAD
+          php -l backend/wp-content/plugins/esc-visual-builder/esc-visual-builder.php
+          php -l backend/wp-content/plugins/esc-visual-builder/includes/change-index.php
+          php -l backend/wp-content/plugins/esc-visual-builder/includes/text-editor.php
+          php -l backend/wp-content/plugins/esc-visual-builder/includes/text-editor-ui.php
+          php -l backend/wp-content/plugins/esc-visual-builder/includes/page-text.php
+          php -l backend/wp-content/plugins/esc-visual-builder/includes/image-editor.php
+          php -l backend/wp-content/plugins/esc-visual-builder/includes/image-editor-ui.php
+          grep -Fq "editor_conflict" backend/wp-content/plugins/esc-visual-builder/includes/text-editor.php
+          grep -Fq "wp_verify_nonce" backend/wp-content/plugins/esc-visual-builder/includes/text-editor.php
+          grep -Fq "esc_vb_text_ui_scripts" backend/wp-content/plugins/esc-visual-builder/esc-visual-builder.php
+          php -l backend/wp-content/plugins/github-trigger/vcs-hook.php
+          grep -Fq "vcs_astro_log_written" backend/wp-content/plugins/github-trigger/vcs-hook.php
+          grep -Fq "resync_required" backend/wp-content/plugins/esc-visual-builder/includes/change-index.php
+      - uses: actions/checkout@v4
+        with:
+          repository: ngocnhanvo/xuongmunonbaohiem-astro
+          ref: github
+          token: ${{ secrets.SOURCE_REPO_PAT }}
+          path: source
+          persist-credentials: false
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: pnpm
+          cache-dependency-path: source/pnpm-lock.yaml
+      - name: Install dependencies
+        working-directory: source
+        run: pnpm install --frozen-lockfile
+      - name: Focused image unit tests
+        working-directory: source
+        run: pnpm exec vitest run src/lib/wordpress/builderImages.test.ts src/lib/wordpress/imageProcessor.preview.test.ts src/lib/wordpress/builderSectionRefresh.test.ts src/lib/wordpress/builderLivePage.test.ts
+      - name: Check Builder inline JavaScript syntax
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --input-type=module <<'NODE'
+          import {readFileSync} from 'node:fs';
+          const astro=readFileSync('source/src/pages/esc-builder/preview/[pageId].astro','utf8');
+          const previewStart=astro.indexOf('<script is:inline define:vars=');
+          if (previewStart<0) throw Error('Astro Builder inline script not found');
+          const scriptStart=astro.indexOf('>',previewStart)+1;
+          const scriptEnd=astro.indexOf('</script>',scriptStart);
+          if (scriptEnd<=scriptStart) throw Error('Astro Builder closing tag missing');
+          new Function(astro.slice(scriptStart,scriptEnd));
+          const php=readFileSync('backend/wp-content/plugins/esc-visual-builder/includes/text-editor-ui.php','utf8');
+          const phpScriptStart=php.indexOf('<script>')+8;
+          const phpScriptEnd=php.indexOf('</script>',phpScriptStart);
+          if (phpScriptStart<8 || phpScriptEnd<=phpScriptStart) throw Error('Editor inline script not found');
+          let editor=php.slice(phpScriptStart,phpScriptEnd);
+          for(const variable of ['rest_read','rest_save','rest_nonce','astro_origin','page_id']){
+            editor=editor.replaceAll('<?php echo $'+variable+'; ?>','"test-value"');
+          }
+          if(editor.includes('<?php')) throw Error('Unsubstituted PHP marker in UI script');
+          new Function(editor);
+          const imageUI=readFileSync('backend/wp-content/plugins/esc-visual-builder/includes/image-editor-ui.php','utf8');
+          const imageStart=imageUI.indexOf('<script>')+8;
+          const imageEnd=imageUI.indexOf('</script>',imageStart);
+          if(imageStart<8||imageEnd<=imageStart) throw Error('Gallery image UI script missing');
+          let imageScript=imageUI.slice(imageStart,imageEnd);
+          for(const variable of ['read','save','nonce','origin','page_id']) {
+            const marker='<?php echo '+String.fromCharCode(36)+variable+'; ?>';
+            imageScript=imageScript.replaceAll(marker,'"test-value"');
+          }
+          if(imageScript.includes('<?php')) throw Error('Unsubstituted gallery PHP token');
+          if(!imageScript.includes("rawUrl.startsWith('/')") ||
+             !imageScript.includes('new URL(rawUrl,window.location.origin).href'))
+            throw Error('Media Library root-relative source normalization missing');
+          if(new URL('/wp-content/uploads/2026/10/kit.webp','https://admin.example.test').href!==
+             'https://admin.example.test/wp-content/uploads/2026/10/kit.webp')
+            throw Error('Media URL normalization fixture failed');
+          new Function(imageScript);
+          const shell=readFileSync('backend/wp-content/plugins/esc-visual-builder/esc-visual-builder.php','utf8');
+          for(const id of ['esc-vb-image-seo','esc-vb-seo-html-alt','esc-vb-seo-media-alt',
+                           'esc-vb-seo-title','esc-vb-seo-caption','esc-vb-seo-description']) {
+            if(!shell.includes('id="'+id+'"')) throw Error('Missing image SEO field: '+id);
+          }
+          if(imageScript.includes("esc-vb-image-alt-draft',{row:current.row"))
+            throw Error('Typed ALT draft must carry tableId and field');
+          if((imageScript.match(/post\('esc-vb-image-alt-draft'/g)||[]).length!==3 ||
+             (imageScript.match(/post\('esc-vb-image-alt-draft',\{tableId:current.tableId,field:current.field/g)||[]).length!==3)
+            throw Error('Every ALT draft dispatch must be table/field scoped');
+          if(!imageScript.includes("invoke(readUrl,{row,field,table_id:tableId})") ||
+             !imageScript.includes("updateSEO()") ||
+             !imageScript.includes("html_alt:current.seo?.html_alt") ||
+             !imageScript.includes("table_id:tableId,expected_version:source.version") ||
+             !imageScript.includes("current.tableId") ||
+             !imageScript.includes("current.field"))
+            throw Error('Image SEO source and save must use exact table/field/row');
+          if(!shell.includes('textarea id="esc-vb-seo-html-alt"') ||
+             !imageScript.includes("isAltDirty()") ||
+             !imageScript.includes("altInput.addEventListener('input'") ||
+             !imageScript.includes("alt:requestedAlt") ||
+             !imageScript.includes("esc-vb-image-alt-draft") ||
+             !astro.includes('patchGalleryAlt(') ||
+             !astro.includes('esc-vb-image-alt-ack'))
+            throw Error('Editable ESC Table ALT contract missing');
+          console.log('Image SEO site-ALT edit state and preview PASS');
+          console.log('Image SEO sidebar source and preview state PASS');
+          const home01=readFileSync('source/src/astro/tablepress/Home_01.astro','utf8');
+          if(!home01.includes('data-esc-builder-image-row={item.row}') ||
+             !home01.includes('data-esc-builder-gallery-background="home_01"'))
+            throw Error('Gallery image row or background is not marked for Builder');
+          if(!astro.includes('patchGalleryImage(') ||
+             !astro.includes('esc-vb-image-selected') ||
+             !astro.includes('esc-vb-image-preview-ack'))
+            throw Error('Gallery preview and selection handshake missing');
+          const expanded={
+            home_02:'img',home_09:'icon',home_11:'img',home_13:'img'
+          };
+          for(const [id,field] of Object.entries(expanded)) {
+            const part=readFileSync('source/src/astro/tablepress/Home_'+id.slice(-2)+'.astro','utf8');
+            if(!part.includes('data-esc-builder-image-field="'+field+'"') ||
+               !part.includes('data-esc-builder-image-row='))
+              throw Error(id+' not annotated with exact field and row');
+            if(!imageScript.includes(id)) throw Error('Sidebar missing allowlist for '+id);
+          }
+          const why=readFileSync('source/src/astro/tablepress/Home_09.astro','utf8');
+          if(!why.includes('data-esc-builder-image-field="background"') ||
+             !why.includes('data-esc-builder-bg-edit'))
+            throw Error('home_09 background does not have builder-only selector');
+          if(!astro.includes('const editableImageColumns = {') ||
+             !astro.includes('function findEditableImage(tableId,row,field)') ||
+             !astro.includes('data-esc-builder-bg-edit'))
+            throw Error('Scoped image preview handler missing');
+          const imagePHP=readFileSync('backend/wp-content/plugins/esc-visual-builder/includes/image-editor.php','utf8');
+          if(!imagePHP.includes("'home_09' => ['icon', 'background']") ||
+             !imagePHP.includes("esc_vb_image_requested_field(") ||
+             !imagePHP.includes("'field' => $field") ||
+             !imagePHP.includes("esc_vb_text_authorize($request)"))
+            throw Error('Backend static image field whitelist or auth missing');
+          const home00Data=readFileSync('source/src/lib/wordpress/tablepress/home00.ts','utf8');
+          const home00Component=readFileSync('source/src/astro/tablepress/Home_00.astro','utf8');
+          if(!home00Data.includes('row,') ||
+             !home00Component.includes('data-esc-builder-image-row={slide.row}') ||
+             !home00Component.includes('data-esc-builder-image-field="image"') ||
+             !astro.includes('const draftGallerySourceSets = new Map()') ||
+             !astro.includes('draftGallerySourceSets.forEach(') ||
+             !astro.includes('figure.querySelectorAll("source")') ||
+             !astro.includes('source.setAttribute("srcset",url)') ||
+             !astro.includes('element.closest("[data-home-slide]") ? "home_00"') ||
+             !imageScript.includes("home_00:['image']") ||
+             !imagePHP.includes("'home_00' => ['image']"))
+            throw Error('home_00 desktop/mobile picture source, ALT or Cancel contract missing');
+          console.log('home_00 desktop/mobile banner image and ALT draft source PASS');
+          console.log('Expanded ESC Table static image source contract PASS');
+          console.log('home_01 image editor source contract PASS');
+          const extract=readFileSync('source/src/astroutils/ExtractHTML.astro','utf8');
+          if(!extract.includes('data-esc-builder-html-part')) throw Error('Editor HTML part annotations missing');
+          if(!astro.includes('patchPageEditorText(')) throw Error('Page HTML preview patching missing');
+          if(!editor.includes('pageSaveUrl')) throw Error('Editor Page text save endpoint missing');
+          const home02=readFileSync('source/src/astro/tablepress/Home_02.astro','utf8');
+          const homeFields=['eyebrow','title','video_title','description','button_text'];
+          for(const field of homeFields) {
+            if(!home02.includes('data-esc-builder-field="'+field+'"'))
+              throw Error('home_02 missing exact text source marker '+field);
+          }
+          if(!astro.includes('target.closest("[data-esc-builder-field]")') ||
+             !astro.includes('fieldNode?.getAttribute("data-esc-builder-field")') ||
+             !editor.includes("const fieldMatch = selected === 'home_02'") ||
+             !editor.includes('section.field || null'))
+            throw Error('Builder home_02 field hint not routed from click/drag into editor');
+          console.log('home_02 explicit source-field selection contract PASS');
+          if(!astro.includes('selectedPageRange(') || !astro.includes('pageEditorPosition('))
+            throw Error('Precise Editor Range selection hooks missing');
+          if(!editor.includes('textarea.value = row?.title ||')) throw Error('Page Editor textarea must show full row');
+          if(!editor.includes('textarea.setSelectionRange(from,to)')) throw Error('Selected substring caret highlighting missing');
+          if(!editor.includes('title:partial ? partial.replacement : text')) throw Error('Page Editor partial save payload missing');
+          const start=editor.indexOf('      function pageTextPadding(');
+          const end=editor.indexOf('      const eligible',start);
+          if(start<0 || end<start) throw Error('Page text helpers missing');
+          const helper=editor.slice(start,end);
+          const row={id:'0:930',title:'theo yêu cầu.',full_text:'  theo yêu cầu.  '};
+          const selection={id:'0:930',prefix:'  theo ',selected:'yêu',suffix:' cầu.  '};
+          const result=new Function('row','selection','text',
+            'let pageTextSelection=selection;'+helper+';return {'+
+            'padding:pageTextPadding(row),preview:pageTextValue(row,text),'+
+            'partial:pagePartialSave(row,text)};'
+          )(row,selection,'theo mong cầu.');
+          if(result.padding.front!=='  ' || result.padding.back!=='  ' ||
+              result.preview!=='  theo mong cầu.  ' || result.partial?.replacement!=='mong')
+            throw Error('Full-context textarea did not preserve source outside edited selection');
+          const wholeChange=new Function('row','selection','text',
+            'let pageTextSelection=selection;'+helper+';return pagePartialSave(row,text);'
+          )(row,selection,'hoàn toàn khác.');
+          if(wholeChange!==null) throw Error('Changed surrounding text must use whole-row fallback');
+          console.log('Builder full-text textarea with highlighted substring fixture PASS');
+          console.log('Builder Astro + WordPress editor inline JS syntax PASS');
+          NODE
+      - name: Verify Page text-token inventory is bounded and markup safe
+        shell: bash
+        run: |
+          php <<'PHP'
+          <?php
+          define('ABSPATH', '/');
+          function add_action($hook, $callback) {}
+          function esc_html($text) {return htmlspecialchars($text, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');}
+          require 'backend/wp-content/plugins/esc-visual-builder/includes/page-text.php';
+          $fixture = '<!-- wp:html --><section><h2>Tiêu đề &amp; mô tả</h2><p>Đoạn chữ <strong>in đậm</strong>.</p><script>var secret="skip";</script><style>.a{color:red}</style></section><!-- /wp:html -->[table id=home_02 /]<section><h3>Đoạn tiếp theo</h3></section>';
+          $parts=esc_vb_page_text_parts($fixture);
+          $items=esc_vb_page_text_candidates($fixture);
+          if(count($parts)!==3 || count($items)!==5) {
+            fwrite(STDERR,"Unexpected Page text inventory part/token counts: ".count($parts)."/".count($items)."\n");exit(1);
+          }
+          $labels=array_column($items,'title');
+          if($labels[0]!=='Tiêu đề & mô tả' ||
+            in_array('var secret="skip";',$labels,true) ||
+            !in_array('in đậm',$labels,true) ||
+            $items[count($items)-1]['part']!==2) {
+            fwrite(STDERR,"Page text inventory leaked scripts, shortcode, or lost entity decoding\n");exit(1);
+          }
+          $raw='BLUE SEA là đơn vị chuyên sản xuất mũ bảo hiểm &amp; quảng cáo';
+          $prefix='BLUE SEA là đơn vị chuyên ';
+          $selected='sản xuất mũ bảo hiểm';
+          $suffix=' & quảng cáo';
+          $result=esc_vb_page_replace_substring($raw,$prefix,$selected,$suffix,'sản xuất mũ bảo hộ');
+          if($result!=='BLUE SEA là đơn vị chuyên sản xuất mũ bảo hộ &amp; quảng cáo') {
+            fwrite(STDERR,"Range replacement corrupted surrounding HTML text\n");exit(1);
+          }
+          if(esc_vb_page_replace_substring($raw,'BLUE SEA','sản xuất mũ bảo hiểm',$suffix,'thay')!==false) {
+            fwrite(STDERR,"Range accepted wrong original prefix\n");exit(1);
+          }
+          if(esc_vb_page_replace_substring('Chữ &amp; màu','Chữ &','amp;',' màu','mới')!==false) {
+            fwrite(STDERR,"Range split HTML entity\n");exit(1);
+          }
+          if($items[0]['node_index']!==0 || $items[count($items)-1]['node_index']!==0) {
+            fwrite(STDERR,"Page token indexes did not reset after shortcode\n");exit(1);
+          }
+          echo "WordPress selected-only text fixture PASS\n";
+          echo "WordPress Page text-token inventory fixture PASS\n";
+          PHP
+      - name: Verify canonical home_01 image-cell replacement
+        shell: bash
+        run: |
+          php <<'PHP'
+          <?php
+          define('ABSPATH','/');
+          function add_action($name,$fn){}
+          function esc_url_raw($v){return $v;}
+          function wp_parse_url($url,$part=-1){return parse_url($url,$part);}
+          function site_url(){return 'https://admin.example.test';}
+          function esc_attr($v){return htmlspecialchars($v,ENT_QUOTES|ENT_SUBSTITUTE,'UTF-8');}
+          function sanitize_text_field($v){return trim(strip_tags($v));}
+          function wp_strip_all_tags($v){return strip_tags($v);}
+          function attachment_url_to_postid($url){return strpos($url,'old.jpg')!==false ? 31 : 0;}
+          function get_post_type($id){return $id===31 ? 'attachment' : 'post';}
+          function wp_attachment_is_image($id){return $id===31;}
+          function get_post($id){return (object)[
+            'post_title'=>'Nhà xưởng Blue Sea',
+            'post_excerpt'=>'Chú thích sản xuất',
+            'post_content'=>'Mô tả ảnh nhà xưởng'
+          ];}
+          function get_post_meta($id,$key,$single){return 'Khu vực sản xuất mũ bảo hiểm';}
+          require 'backend/wp-content/plugins/esc-visual-builder/includes/image-editor.php';
+          $raw='<figure class="gallery"><img class="factory" src="https://old.test/a.jpg" srcset="https://old.test/a-400.jpg 400w" sizes="100vw" alt="Xưởng sản xuất"></figure>';
+          if(esc_vb_image_cell_url($raw)!=='https://old.test/a.jpg')exit("Image URL parse failed\n");
+          $relative='<img src="/wp-content/uploads/2026/10/old.jpg" alt="Factory">';
+          if(esc_vb_image_cell_url($relative)!=='/wp-content/uploads/2026/10/old.jpg' ||
+             esc_vb_image_public_url(esc_vb_image_cell_url($relative))!=='https://admin.example.test/wp-content/uploads/2026/10/old.jpg')
+            exit("Relative WordPress gallery URL not recognized\n");
+          $relative_new=esc_vb_image_replace_cell($relative,'https://admin.example.test/wp-content/uploads/2026/10/new.jpg');
+          if(strpos($relative_new,'src="/wp-content/uploads/2026/10/new.jpg"')===false)
+            exit("Relative Gallery IMG src not preserved\n");
+          $next=esc_vb_image_replace_cell($raw,'https://new.test/image.jpg');
+          if(!is_string($next)||strpos($next,'src="https://new.test/image.jpg"')===false||
+             strpos($next,'class="factory"')===false||strpos($next,'alt="Xưởng sản xuất"')===false||
+             strpos($next,'srcset=')!==false||strpos($next,'sizes=')!==false||
+             strpos($next,'<figure')===false)
+            exit("Image update did not preserve HTML or remove stale srcset\n");
+          if(esc_vb_image_cell_url('<img src="x.jpg" onerror="alert(1)">')!==false)
+            exit("Rejected image cell allowed unsafe HTML\n");
+          if(esc_vb_image_cell_url('<img src="https://a.test/a"><img src="https://b.test/b">')!==false)
+            exit("Multiple images should not be edited as one cell\n");
+          if(esc_vb_image_replace_cell($raw,'javascript:alert(1)')!==false)
+            exit("Non-HTTPS replacement accepted\n");
+          if(esc_vb_image_column(['id','title','image'])!==2)exit("Column lookup failed\n");
+          $allowed=esc_vb_image_allowed_fields();
+          if(($allowed['home_00'] ?? [])!==['image'] ||
+             ($allowed['home_02'] ?? [])!==['img'] ||
+             ($allowed['home_09'] ?? [])!==['icon','background'] ||
+             ($allowed['home_11'] ?? [])!==['img'] ||
+             ($allowed['home_13'] ?? [])!==['img'] ||
+             isset($allowed['home_03']) || isset($allowed['home_04']) ||
+             isset($allowed['home_10']) || isset($allowed['home_12']))
+             exit("Editable ESC Table allowlist includes API images or misses static fields\n");
+          echo "Expanded ESC Table image allowlist PASS\n";
+          $seo=esc_vb_image_seo_metadata('<img src="/uploads/old.jpg" alt="Sản xuất &amp; in logo">','https://admin.example.test/uploads/old.jpg');
+          if($seo['html_alt']!=='Sản xuất & in logo' ||
+             !$seo['attachment_found'] || $seo['media_alt']!=='Khu vực sản xuất mũ bảo hiểm' ||
+             $seo['title']!=='Nhà xưởng Blue Sea' || $seo['caption']!=='Chú thích sản xuất' ||
+             $seo['description']!=='Mô tả ảnh nhà xưởng')
+            exit("Image SEO metadata fixture failed\n");
+          $missing=esc_vb_image_seo_metadata('<img src="/uploads/unmatched.jpg" alt="ALT gốc">','https://admin.example.test/uploads/unmatched.jpg');
+          if($missing['attachment_found'] || $missing['html_alt']!=='ALT gốc' || $missing['title']!=='')
+            exit("Missing image Media SEO fallback failed\n");
+          $alt_only=esc_vb_image_replace_alt($raw,'Khu vực kiểm tra & đóng gói');
+          if(!is_string($alt_only) ||
+             strpos($alt_only,'alt="Khu vực kiểm tra &amp; đóng gói"')===false ||
+             strpos($alt_only,'src="https://old.test/a.jpg"')===false ||
+             strpos($alt_only,'srcset="https://old.test/a-400.jpg 400w"')===false ||
+             strpos($alt_only,'class="factory"')===false)
+            exit("ALT-only change altered IMG source or other attributes\n");
+          $new_img_with_alt=esc_vb_image_replace_alt($next,'Ảnh nhà xưởng mới');
+          if(!is_string($new_img_with_alt) ||
+             strpos($new_img_with_alt,'src="https://new.test/image.jpg"')===false ||
+             strpos($new_img_with_alt,'alt="Ảnh nhà xưởng mới"')===false)
+            exit("Combined image and ALT update fixture failed\n");
+          $missing_alt=esc_vb_image_replace_alt('<img src="/uploads/old.jpg" />','Alt mới');
+          if(strpos($missing_alt,'alt="Alt mới"')===false)
+            exit("Missing ALT attribute was not inserted safely\n");
+          $decorative=esc_vb_image_replace_alt($raw,'');
+          if(strpos($decorative,'alt=""')===false)
+            exit("Empty ALT for decorative image rejected\n");
+          if(esc_vb_image_replace_alt($raw,'<script>')!==false)
+            exit("Unsafe ALT with HTML accepted\n");
+          if(esc_vb_image_replace_alt('<img src="x.jpg">','Alt')!==false)
+            exit("Unsafe URL IMG cell accepted\n");
+          echo "home_01 ALT-only, image+ALT, empty ALT, invalid ALT fixtures PASS\n";
+          echo "home_01 image SEO metadata + Media fallback PASS\n";
+          echo "home_01 canonical cell replacement and srcset cleanup PASS\n";
+          PHP
+      - name: Verify preview isolation
+        working-directory: source
+        run: |
+          set -euo pipefail
+          grep -Fq 'readLiveWordPressPreview' 'src/pages/preview/[...slug].astro'
+          grep -Fq 'rewriteBuilderImages' 'src/pages/esc-builder/preview/[pageId].astro'
+          ! grep -Fq 'getSharedWordPressData(' 'src/pages/esc-builder/preview/[pageId].astro'
+          grep -Fq 'wp-content/uploads/' src/lib/wordpress/imageProcessor.ts

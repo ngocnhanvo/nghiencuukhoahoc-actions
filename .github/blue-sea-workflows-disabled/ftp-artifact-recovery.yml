@@ -1,0 +1,134 @@
+name: Blue Sea FTP Artifact Recovery
+on:
+  workflow_dispatch:
+    inputs:
+      source_run_id:
+        description: "Successful build run ID containing blue-sea-ftp-package"
+        type: string
+        required: true
+  push:
+    branches: [main]
+    paths: ['requests/ftp-recovery.txt']
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: xuongmunonbaohiem-actions-deploy
+  cancel-in-progress: false
+
+jobs:
+  ftp-recover:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - name: Select archived package from previous build
+        id: archive
+        env:
+          REQUESTED_RUN: ${{ inputs.source_run_id }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          run_id="$REQUESTED_RUN"
+          if [ -z "$run_id" ]; then run_id="$(head -n 1 requests/ftp-recovery.txt | tr -d '\r\n')"; fi
+          [[ "$run_id" =~ ^[0-9]{8,20}$ ]] || { echo "::error::Invalid build run ID"; exit 1; }
+          echo "source_run=$run_id" >> "$GITHUB_OUTPUT"
+      - name: Download exact ZIP from verified build
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_RUN: ${{ steps.archive.outputs.source_run }}
+        run: |
+          set -euo pipefail
+          mkdir -p source/upload
+          gh run download "$SOURCE_RUN" --repo "$GITHUB_REPOSITORY" --name blue-sea-ftp-package --dir source/upload
+          test -s source/upload/escvn.zip
+          unzip -tq source/upload/escvn.zip
+          echo "Using preserved ZIP from Actions run $SOURCE_RUN; Astro build will NOT run again."
+      - name: Prepare lftp without unnecessary apt index refresh
+        shell: bash
+        run: |
+          set -euo pipefail
+          started=$SECONDS
+          if ! command -v lftp >/dev/null 2>&1; then
+            if ! sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends lftp; then
+              echo "::warning::lftp install needed an apt index refresh; retrying."
+              sudo apt-get update -y -qq
+              sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends lftp
+            fi
+          fi
+          lftp --version | head -n 1
+          elapsed=$((SECONDS - started))
+          echo "lftp setup completed in ${elapsed}s"
+          echo "- lftp setup: ${elapsed}s" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Resolve Astro FTP target
+        id: ftp_target
+        shell: bash
+        env:
+          ENV_FILE: ${{ secrets.ENV_FILE }}
+          FTP_ASTRO_DIR: ${{ vars.FTP_ASTRO_DIR }}
+          FTP_SERVER: ${{ secrets.FTP_SERVER }}
+          FTP_USERNAME: ${{ secrets.FTP_USERNAME }}
+          FTP_PASSWORD: ${{ secrets.FTP_PASSWORD }}
+        run: |
+          set -euo pipefail
+          url=$(printf '%s\n' "$ENV_FILE" | sed -n 's/^WC_URL_CLIENT=//p' | tail -1 | tr -d '\r\"\047')
+          [[ "$url" =~ ^https?://([a-zA-Z0-9.-]+)(:[0-9]+)?/?$ ]] || { echo '::error::Invalid or missing WC_URL_CLIENT in ENV_FILE'; exit 1; }
+          host="${BASH_REMATCH[1],,}"
+          [[ "$host" == *.* && "$host" != *..* && "$host" =~ ^[a-z0-9.-]+$ ]] || exit 1
+          default_dir="/domains/$host/public_html/"
+          target="${FTP_ASTRO_DIR:-$default_dir}"
+          [[ "$target" =~ ^/[a-zA-Z0-9._/-]+/$ && "$target" != *..* && "$target" != *'//'* ]] || { echo '::error::Unsafe FTP target'; exit 1; }
+          echo "Using FTP target: $target (frontend: $host)"
+          if [[ "$target" != "$default_dir" ]]; then echo '::warning::Explicit FTP_ASTRO_DIR override in use'; fi
+          lftp -u "$FTP_USERNAME","$FTP_PASSWORD" "ftp://$FTP_SERVER" <<LFTP
+          set cmd:fail-exit yes
+          set net:max-retries 3
+          set net:timeout 30
+          set ftp:passive-mode yes
+          set ssl:verify-certificate no
+          cd "$target"
+          pwd
+          bye
+          LFTP
+          echo "path=$target" >> "$GITHUB_OUTPUT"
+      - name: Verify signed WordPress unzip protocol before uploading
+        shell: bash
+        env:
+          SOURCE_REPO_PAT: ${{ secrets.SOURCE_REPO_PAT }}
+          ENV_FILE: ${{ secrets.ENV_FILE }}
+          ASTRO_FTP_TARGET: ${{ steps.ftp_target.outputs.path }}
+          FTP_ASTRO_DIR: ${{ vars.FTP_ASTRO_DIR }}
+          ZIP_PATH: source/upload/escvn.zip
+        run: |
+          set -euo pipefail
+          python3 -m py_compile scripts/esc-remote-unzip.py
+          python3 scripts/esc-remote-unzip.py verify
+      - name: Resume FTP upload from archived ZIP
+        shell: bash
+        env:
+          FTP_SERVER: ${{ secrets.FTP_SERVER }}
+          FTP_USERNAME: ${{ secrets.FTP_USERNAME }}
+          FTP_PASSWORD: ${{ secrets.FTP_PASSWORD }}
+          ASTRO_FTP_TARGET: ${{ steps.ftp_target.outputs.path }}
+          ZIP_PATH: source/upload/escvn.zip
+        run: |
+          set -euo pipefail
+          bash scripts/esc-resumable-ftp.sh
+      - name: Trigger signed remote unzip and validate Astro artifact
+        shell: bash
+        env:
+          SOURCE_REPO_PAT: ${{ secrets.SOURCE_REPO_PAT }}
+          ENV_FILE: ${{ secrets.ENV_FILE }}
+          ASTRO_FTP_TARGET: ${{ steps.ftp_target.outputs.path }}
+          FTP_ASTRO_DIR: ${{ vars.FTP_ASTRO_DIR }}
+          ZIP_PATH: source/upload/escvn.zip
+        run: |
+          set -euo pipefail
+          started=$SECONDS
+          python3 scripts/esc-remote-unzip.py unpack
+          elapsed=$((SECONDS - started))
+          echo "Signed remote unzip completed in ${elapsed}s"
+          echo "- Authenticated remote unzip: ${elapsed}s" >> "$GITHUB_STEP_SUMMARY"

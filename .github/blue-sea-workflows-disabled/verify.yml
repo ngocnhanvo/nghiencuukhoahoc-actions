@@ -1,0 +1,155 @@
+name: Verify Blue Sea Astro Development
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - 'requests/verify-xuongmunonbaohiem.txt'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: xuongmunonbaohiem-actions-verify
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Validate required secrets
+        shell: bash
+        env:
+          SOURCE_REPO_PAT: ${{ secrets.SOURCE_REPO_PAT }}
+          ENV_FILE: ${{ secrets.ENV_FILE }}
+        run: |
+          set -euo pipefail
+          test -n "$SOURCE_REPO_PAT"
+          test -n "$ENV_FILE"
+
+      - name: Checkout private Blue Sea Astro source
+        uses: actions/checkout@v4
+        with:
+          repository: ngocnhanvo/xuongmunonbaohiem-astro
+          ref: github
+          token: ${{ secrets.SOURCE_REPO_PAT }}
+          path: source
+          persist-credentials: false
+
+      - name: Show source revision
+        working-directory: source
+        run: echo "Verifying xuongmunonbaohiem-astro@github $(git rev-parse HEAD)"
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: "pnpm"
+          cache-dependency-path: source/pnpm-lock.yaml
+
+      - name: Install dependencies
+        working-directory: source
+        run: pnpm install --frozen-lockfile
+
+      - name: Make .env
+        working-directory: source
+        shell: bash
+        env:
+          ENV_FILE: ${{ secrets.ENV_FILE }}
+        run: printf '%s\n' "$ENV_FILE" > .env
+
+      - name: Run unit tests
+        working-directory: source
+        run: pnpm test:run
+
+      - name: Run Astro check and capture inherited diagnostics
+        working-directory: source
+        shell: bash
+        run: |
+          set +e
+          pnpm check 2>&1 | tee astro-check.log
+          echo "ASTRO_CHECK_STATUS=${PIPESTATUS[0]}" >> "$GITHUB_ENV"
+          exit 0
+
+      - name: Guard migration-sensitive Astro errors
+        working-directory: source
+        shell: bash
+        run: |
+          python - <<'PY'
+          import os
+          import pathlib
+          import re
+          import sys
+
+          text = pathlib.Path("astro-check.log").read_text(encoding="utf-8", errors="replace")
+          clean = re.sub(r"\x1b\[[0-9;]*m", "", text)
+          guarded_paths = (
+              "src/astro/tablepress/Home_00.astro",
+              "src/lib/wordpress/tablepress/home00.ts",
+              "scripts/componentsJS/menu-desktop.ts",
+              "scripts/componentsJS/menu-mobile.ts",
+          )
+          errors = [
+              line for line in clean.splitlines()
+              if " - error " in line and any(path in line for path in guarded_paths)
+          ]
+
+          if errors:
+              print("Migration-sensitive Astro errors detected:")
+              print("\n".join(errors))
+              sys.exit(1)
+
+          status = int(os.environ.get("ASTRO_CHECK_STATUS", "0"))
+          if status != 0:
+              print("Full-repository Astro check still has inherited legacy errors; no migration-sensitive error was found.")
+          else:
+              print("Full-repository Astro check passed.")
+          PY
+
+      - name: Build development branch
+        working-directory: source
+        run: pnpm run build-git
+
+      - name: Preview SSR runtime regression
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --check dist/server/entry.mjs
+          export PORT=4379 HOST=127.0.0.1
+          node dist/server/entry.mjs > /tmp/blue-sea-preview-ssr.log 2>&1 &
+          server_pid=$!
+          trap 'kill "$server_pid" 2>/dev/null || true' EXIT
+          status=""
+          for attempt in {1..18}; do
+            status="$(curl -sS -o /tmp/blue-sea-preview.html -D /tmp/blue-sea-preview.headers -w '%{http_code}' --max-time 20 "http://127.0.0.1:4379/preview/trang-chu" || true)"
+            if [ "$status" = "200" ]; then break; fi
+            if ! kill -0 "$server_pid" 2>/dev/null; then
+              echo "Astro standalone process died."
+              tail -n 60 /tmp/blue-sea-preview-ssr.log
+              exit 1
+            fi
+            sleep 3
+          done
+          if [ "$status" != "200" ]; then
+            echo "::error::/preview/trang-chu HTTP $status, expected 200"
+            tail -n 70 /tmp/blue-sea-preview-ssr.log
+            exit 1
+          fi
+          grep -qi 'blue sea' /tmp/blue-sea-preview.html
+          grep -qi 'noindex' /tmp/blue-sea-preview.headers
+          grep -qi 'no-store' /tmp/blue-sea-preview.headers
+          missing="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 20 "http://127.0.0.1:4379/preview/esc-page-does-not-exist-xyz")"
+          test "$missing" = "404"
+          unauthorized="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 20 "http://127.0.0.1:4379/esc-builder/preview/1")"
+          test "$unauthorized" = "403"
+          echo "Preview SSR runtime PASS: home=200, missing=404, private builder=403, noindex/no-store."

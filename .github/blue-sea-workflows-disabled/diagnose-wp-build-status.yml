@@ -1,0 +1,115 @@
+name: Diagnose WordPress GitHub Build Status
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/diagnose-wp-build-status.yml']
+permissions:
+  contents: read
+jobs:
+  inspect:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 7
+    steps:
+      - name: Compare authenticated WP trigger state with GitHub Actions (no dispatch)
+        env:
+          ENV_FILE: ${{ secrets.ENV_FILE }}
+          WP_ADMIN_USERNAME: ${{ secrets.WP_ADMIN_USERNAME }}
+          WP_ADMIN_PASSWORD: ${{ secrets.WP_ADMIN_PASSWORD }}
+          SOURCE_REPO_PAT: ${{ secrets.SOURCE_REPO_PAT }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import os, re, json, urllib.parse
+          import requests
+          vars={}
+          for raw in os.environ['ENV_FILE'].splitlines():
+              line=raw.strip().removeprefix('export ').strip()
+              if line.startswith('WC_URL='):
+                  val=line.split('=',1)[1].strip().strip("\"'")
+                  vars.setdefault('WC_URL',[]).append(val)
+          if len(vars.get('WC_URL',[])) != 1: raise RuntimeError('Missing/duplicate WC_URL')
+          p=urllib.parse.urlsplit(vars['WC_URL'][0])
+          if p.scheme != 'https' or not p.hostname: raise RuntimeError('Invalid WordPress URL')
+          root=p.scheme+'://'+p.netloc
+          s=requests.Session()
+          s.headers['User-Agent']='BlueSea-Build-State-Diagnostic/1.0'
+          s.get(root+'/wp-login.php',timeout=30)
+          dest=root+'/wp-admin/admin.php?page=vcs-build-trigger'
+          login=s.post(root+'/wp-login.php',data={'log':os.environ['WP_ADMIN_USERNAME'],
+              'pwd':os.environ['WP_ADMIN_PASSWORD'],'wp-submit':'Log In',
+              'redirect_to':dest,'testcookie':'1'},timeout=40)
+          page=s.get(dest,timeout=40)
+          if page.status_code!=200 or 'wp-login.php' in page.url or 'vcs-build-trigger' not in page.text:
+              raise RuntimeError('Authenticated WordPress build screen unavailable')
+          initial=re.search(r'var\s+vcsBuild\s*=\s*(\{[^\n;]*\})\s*;',page.text)
+          if not initial: raise RuntimeError('Missing build status JS settings')
+          v=json.loads(initial.group(1))
+          print('WORDPRESS_BEFORE='+json.dumps({k:v.get(k) for k in
+              ('initial_active','initial_elapsed_seconds','initial_started_at','pending_count')},ensure_ascii=False))
+          ajax=s.post(v['ajax_url'],data={'action':'vcs_check_build_status','nonce':v['nonce']},
+              timeout=40)
+          try: response=ajax.json()
+          except Exception: raise RuntimeError('AJAX is not JSON: HTTP '+str(ajax.status_code))
+          state=response.get('data') or {}
+          safe={key:state.get(key) for key in ('status','build_active','pending_count','elapsed_seconds','started_at','code')}
+          if isinstance(state.get('dashboard_url'),str):
+              link=state['dashboard_url']
+              safe['github_run_id']=re.search(r'/runs/(\d+)',link).group(1) if re.search(r'/runs/(\d+)',link) else None
+          safe['message']=(state.get('message') or '')[:180]
+          print('WORDPRESS_STATUS_AJAX='+json.dumps(safe,ensure_ascii=False))
+          github=requests.get('https://api.github.com/repos/ngocnhanvo/xuongmunonbaohiem-actions/actions/runs',
+              params={'event':'repository_dispatch','per_page':8},
+              headers={'Authorization':'Bearer '+os.environ['SOURCE_REPO_PAT'],
+                  'Accept':'application/vnd.github+json','User-Agent':'BlueSea-Diagnostic'},
+              timeout=35)
+          github.raise_for_status()
+          runs=github.json().get('workflow_runs',[])
+          print('LATEST_GITHUB_DEPLOYS='+json.dumps([
+             {'id':r.get('id'),'status':r.get('status'),'conclusion':r.get('conclusion'),
+              'created_at':r.get('created_at'),'updated_at':r.get('updated_at')} for r in runs[:8]],ensure_ascii=False))
+          PY
+
+      - name: Compare deployed GitHub Trigger JavaScript and PHP admin UI state
+        env:
+          ENV_FILE: ${{ secrets.ENV_FILE }}
+          WP_ADMIN_USERNAME: ${{ secrets.WP_ADMIN_USERNAME }}
+          WP_ADMIN_PASSWORD: ${{ secrets.WP_ADMIN_PASSWORD }}
+          SOURCE_REPO_PAT: ${{ secrets.SOURCE_REPO_PAT }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import requests,os,re,json,base64,hashlib,urllib.parse,html
+          wp=[]
+          for line in os.environ['ENV_FILE'].splitlines():
+              line=line.strip().removeprefix('export ').strip()
+              if line.startswith('WC_URL='): wp.append(line.split('=',1)[1].strip().strip("\"'"))
+          if len(wp)!=1:raise RuntimeError('Invalid WC_URL')
+          root=urllib.parse.urlsplit(wp[0]); origin=root.scheme+'://'+root.netloc
+          sess=requests.Session()
+          sess.get(origin+'/wp-login.php',timeout=30)
+          target=origin+'/wp-admin/admin.php?page=vcs-build-trigger'
+          sess.post(origin+'/wp-login.php',data={'log':os.environ['WP_ADMIN_USERNAME'],'pwd':os.environ['WP_ADMIN_PASSWORD'],
+              'wp-submit':'Log In','redirect_to':target,'testcookie':'1'},timeout=40)
+          page=sess.get(target,timeout=40)
+          if 'vcs-build-btn-main' not in page.text:raise RuntimeError('Cannot inspect WP build admin')
+          btn=re.search(r'<button\b[^>]*\bid="vcs-build-btn-main"[^>]*>(.*?)</button>',page.text,re.S)
+          script=re.search(r'(?:src=")([^"]*github-trigger/vcs-build-trigger\.js[^"]*)',page.text,re.I)
+          print('WORDPRESS_ADMIN_BUTTON='+json.dumps({'button_html_text':re.sub(r'<[^>]+>','',btn.group(1)).strip()[:100] if btn else None,
+            'disabled':bool(btn and 'disabled' in btn.group(0).split('>')[0]),'script_url':html.unescape(script.group(1)) if script else None},ensure_ascii=False))
+          gh=requests.get('https://api.github.com/repos/ngocnhanvo/xuongmunonbaohiem-php/contents/wp-content/plugins/github-trigger/vcs-build-trigger.js',
+              params={'ref':'master'},headers={'Authorization':'Bearer '+os.environ['SOURCE_REPO_PAT'],
+              'Accept':'application/vnd.github+json'},timeout=30)
+          gh.raise_for_status()
+          source=base64.b64decode(gh.json()['content'])
+          remote=sess.get(origin+'/wp-content/plugins/github-trigger/vcs-build-trigger.js?_esc_build_diag=20261015',timeout=30)
+          remote.raise_for_status()
+          match=(source==remote.content)
+          print('SCRIPT_PARITY='+json.dumps({'same_content':match,
+              'git_sha256':hashlib.sha256(source).hexdigest()[:16],
+              'production_sha256':hashlib.sha256(remote.content).hexdigest()[:16],
+              'production_has_running_button_label':b'\xe2\x8f\xb3' in remote.content and b'currentBuildActive' in remote.content,
+              'production_has_elapsed_seconds':b'elapsed_seconds' in remote.content},ensure_ascii=False))
+          PY

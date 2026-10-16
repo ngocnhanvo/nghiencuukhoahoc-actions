@@ -1,0 +1,302 @@
+name: ESC Builder Source Contract QA
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'requests/esc-builder-source-contract.txt'
+permissions:
+  contents: read
+jobs:
+  contract:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    steps:
+      - name: Resolve WC_URL from ENV_FILE
+        shell: bash
+        env:
+          ENV_FILE: ${{ secrets.ENV_FILE }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import os,re
+          from urllib.parse import urlsplit
+          vals=[]
+          for line in os.environ.get("ENV_FILE","").splitlines():
+              line=line.strip()
+              if line.startswith("export "): line=line[7:].strip()
+              if line.startswith("WC_URL="):
+                  v=line.split("=",1)[1].strip()
+                  if len(v)>=2 and v[0]==v[-1] and v[0] in ("'",'"'):v=v[1:-1]
+                  vals.append(v)
+          if len(vals)!=1:raise SystemExit("Missing or duplicate WC_URL in ENV_FILE")
+          parsed=urlsplit(vals[0]);host=(parsed.hostname or "").lower()
+          if (parsed.scheme!="https" or not re.fullmatch(r"[a-z0-9.-]+",host)
+              or "." not in host or ".." in host or parsed.username or parsed.password
+              or parsed.port not in (None,443) or parsed.path not in ("","/")
+              or parsed.query or parsed.fragment):raise SystemExit("Invalid WC_URL")
+          with open(os.environ["GITHUB_ENV"],"a",encoding="utf8") as f:
+              f.write("WC_URL=https://"+host+"\n")
+          PY
+      - name: Test authenticated WordPress source contract
+        env:
+          WP_ADMIN_USERNAME: ${{ secrets.WP_ADMIN_USERNAME }}
+          WP_ADMIN_PASSWORD: ${{ secrets.WP_ADMIN_PASSWORD }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m pip install -q requests beautifulsoup4
+          python3 - <<'PY'
+          import os,requests
+          from urllib.parse import urlparse,parse_qs
+          from bs4 import BeautifulSoup
+          root=os.environ['WC_URL'].split('/wp-admin')[0].rstrip('/')
+          session=requests.Session()
+          session.get(root+'/wp-login.php',timeout=30)
+          session.post(root+'/wp-login.php',data={
+            'log':os.environ['WP_ADMIN_USERNAME'],
+            'pwd':os.environ['WP_ADMIN_PASSWORD'],
+            'wp-submit':'Log In',
+            'redirect_to':root+'/wp-admin/admin.php?page=esc-visual-builder',
+            'testcookie':'1'
+          },timeout=40,allow_redirects=True)
+          page=session.get(root+'/wp-admin/admin.php?page=esc-visual-builder',timeout=40)
+          if 'wp-login.php' in page.url or page.status_code!=200:
+            raise SystemExit('WP admin login or Builder page HTTP error: '+str(page.status_code))
+          iframe=BeautifulSoup(page.text,'html.parser').select_one('#esc-vb-frame')
+          if not iframe: raise SystemExit('Missing Builder iframe')
+          src=iframe.get('src')
+          params=parse_qs(urlparse(src).query)
+          ticket=params.get('ticket',[''])[0]
+          page_id=int(urlparse(src).path.rstrip('/').split('/')[-1])
+          if len(ticket)!=64: raise SystemExit('Invalid Builder preview ticket')
+          verify=session.post(root+'/wp-json/esc-builder/v1/changes',json={
+            'ticket':ticket,'page_id':page_id,'since':0
+          },timeout=35)
+          if verify.status_code!=200:
+            raise SystemExit('Builder changes metadata contract HTTP '+str(verify.status_code))
+          data=verify.json()
+          if not isinstance(data.get('changes'),list) or not isinstance(data.get('pending'),list):
+            raise SystemExit('Invalid changes revision schema')
+          state=session.post(root+'/wp-json/esc-builder/v1/page-state',json={
+            'ticket':ticket,'page_id':page_id
+          },timeout=35)
+          if state.status_code!=200:
+            raise SystemExit('Builder page-state HTTP '+str(state.status_code))
+          state_data=state.json()
+          table_ids=[v.get('id') for v in state_data.get('tables',[])]
+          if 'home_00' not in table_ids or 'home_01' not in table_ids:
+            raise SystemExit('Builder page-state did not discover home_00/home_01')
+          if any(len(t.get('version',''))!=64 for t in state_data['tables']):
+            raise SystemExit('Builder page-state versions are invalid')
+          batch=session.post(root+'/wp-json/esc-builder/v1/table-batch',json={
+            'ticket':ticket,'page_id':page_id,'table_ids':['home_00','home_01']
+          },timeout=45)
+          if batch.status_code!=200:
+            raise SystemExit('Builder table-batch HTTP '+str(batch.status_code))
+          sources=batch.json().get('sources',{})
+          for table_id in ['home_00','home_01']:
+            table_data=sources.get(table_id,{}).get('table',{})
+            if table_data.get('id')!=table_id or not isinstance(table_data.get('items'),list):
+              raise SystemExit('Builder batch source invalid: '+table_id)
+          # Builder Giai đoạn 2: inspect editable column names/types only.
+          # Never print actual website content, customer data or bearer tickets.
+          for tid in ['home_00','home_01']:
+            raw=sources.get(tid,{}).get('table',{})
+            rows=raw.get('items') or []
+            fields=[{'name':k,'type':type(v).__name__,'chars':len(str(v))}
+                    for k,v in (rows[0] if rows else {}).items()]
+            print('BUILDER_EDIT_SOURCE_SCHEMA='+str({
+              'id':tid,'row_count':len(rows),'fields':fields,
+              'meta_keys':list((raw.get('meta') or {}).keys())
+            }))
+          layout=session.post(root+'/wp-json/esc-builder/v1/page-layout',json={
+            'ticket':ticket,'page_id':page_id
+          },timeout=35)
+          if layout.status_code!=200:
+            raise SystemExit('Builder page-layout HTTP '+str(layout.status_code))
+          lp=layout.json().get('page',{})
+          if lp.get('id')!=page_id or not isinstance(lp.get('content',{}).get('rendered'),str):
+            raise SystemExit('Builder current Page layout source invalid')
+          print('ESC Builder live Page HTML source PASS: authenticated editor-only layout fetched.')
+          for ids in [['home_03','home_04','home_05','home_06'],['home_07','home_08','home_09','home_10'],['home_11','home_12','home_13']]:
+            scan=session.post(root+'/wp-json/esc-builder/v1/table-batch',json={
+              'ticket':ticket,'page_id':page_id,'table_ids':ids
+            },timeout=45)
+            if scan.status_code!=200: raise SystemExit('Builder dependency scan HTTP '+str(scan.status_code))
+            for tid in ids:
+              tab=scan.json().get('sources',{}).get(tid,{}).get('table',{})
+              first=(tab.get('items') or [{}])[0]
+              print('BUILDER_TABLE_DEPENDENCY='+str({
+                'id':tid,'api':(tab.get('meta') or {}).get('api'),
+                'rows':len(tab.get('items') or []),
+                'first_fields':list(first.keys())[:25],
+                'name_chars':len(str(tab.get('name',''))),
+                'title_chars':len(str(tab.get('title',''))),
+                'description_chars':len(str(tab.get('description',''))),
+                'settings_keys':list((tab.get('settings') or {}).keys())[:15],
+                'sample_key':str(first.get('key',first.get('_id',first.get('api-key',''))))[:35]
+              }))
+          print('ESC Builder live-first page-state PASS: '+str(len(table_ids))+
+                ' ESC Table sources discovered; bounded home_00/home_01 batch PASS.')
+          table=session.post(root+'/wp-json/esc-builder/v1/table-source',json={
+            'ticket':ticket,'page_id':page_id,'table_id':'home_00'
+          },timeout=35)
+          if table.status_code!=200:
+            # Never print ticket, cookie or response body in logs.
+            try: error_code=str(table.json().get('code','unknown'))[:65]
+            except Exception: error_code='non-json-response'
+            raise SystemExit('Builder single-table contract HTTP '+str(table.status_code)+' code='+error_code)
+          t=table.json().get('table')
+          if not isinstance(t,dict) or t.get('id')!='home_00' or not isinstance(t.get('items'),list):
+            raise SystemExit('ESC Table adapter returned unexpected schema (expected id and items)')
+          unauthorized=session.post(root+'/wp-json/esc-builder/v1/table-source',json={
+            'ticket':'invalid','page_id':page_id,'table_id':'home_00'
+          },timeout=30)
+          if unauthorized.status_code!=403:
+            raise SystemExit('Invalid Builder ticket was not rejected (expected HTTP 403)')
+          # Phase 2A/2C: strictly safe editor API contract verification.
+          # Only perform no-op title saves and known 409 conflict requests.
+          # Never change customer data or trigger a build during QA.
+          import re
+          nonce_match=re.search(r'const restNonce\s*=\s*"([A-Za-z0-9]+)"',page.text)
+          if not nonce_match: raise SystemExit('Visual Builder edit REST nonce not found')
+          wp_nonce=nonce_match.group(1)
+          edit_headers={'X-WP-Nonce':wp_nonce}
+          for table_id in ['home_00','home_01']:
+            editor=session.post(root+'/wp-json/esc-builder/v1/editable-text',json={
+              'ticket':ticket,'page_id':page_id,'table_id':table_id
+            },headers=edit_headers,timeout=40)
+            if editor.status_code!=200:
+              raise SystemExit('Editor read '+table_id+' HTTP '+str(editor.status_code)+' code='+str(editor.json().get('code',''))[:70])
+            edt=editor.json()
+            if edt.get('table_id')!=table_id or edt.get('field')!='title' or not edt.get('rows'):
+              raise SystemExit('Editor source schema mismatch '+table_id)
+            if table_id=='home_01':
+              section=edt.get('section_title')
+              if not isinstance(section,dict) or not section.get('editable') or not section.get('title') or len(section.get('hash',''))!=64:
+                raise SystemExit('home_01 section heading read contract failed')
+              section_base={'ticket':ticket,'page_id':page_id,'table_id':table_id,
+                'field':'section_title','row':'section','title':section['title'],
+                'original_hash':section['hash'],'expected_version':edt['version']}
+              stale_heading=session.post(root+'/wp-json/esc-builder/v1/save-text',
+                json={**section_base,'expected_version':'0'*64},
+                headers=edit_headers,timeout=40)
+              if stale_heading.status_code!=409:
+                raise SystemExit('home_01 heading stale-version guard failed: '+str(stale_heading.status_code))
+              unchanged_heading=session.post(root+'/wp-json/esc-builder/v1/save-text',
+                json=section_base,headers=edit_headers,timeout=40)
+              if unchanged_heading.status_code!=200 or unchanged_heading.json().get('unchanged') is not True:
+                raise SystemExit('home_01 heading no-op save failed: '+str(unchanged_heading.status_code))
+              print('ESC_BUILDER_SECTION_HEADING_CONTRACT='+str({
+                'id':'home_01','readHTTP':200,'staleHTTP':409,'noOpSaveHTTP':200,'wroteContent':False}))
+            editable=next((r for r in edt['rows'] if r.get('editable')),None)
+            if editable is None: raise SystemExit('No plain-text title row for '+table_id)
+            base={'ticket':ticket,'page_id':page_id,'table_id':table_id,
+                  'row':editable['row'],'title':editable['title'],
+                  'original_hash':editable['hash'],'expected_version':edt['version']}
+            stale=session.post(root+'/wp-json/esc-builder/v1/save-text',
+              json={**base,'expected_version':'0'*64},
+              headers=edit_headers,timeout=40)
+            if stale.status_code!=409:
+              raise SystemExit('Editor optimistic lock did not reject stale version: '+str(stale.status_code))
+            unchanged=session.post(root+'/wp-json/esc-builder/v1/save-text',
+              json=base,headers=edit_headers,timeout=40)
+            if unchanged.status_code!=200 or unchanged.json().get('unchanged') is not True:
+              raise SystemExit('Editor no-op contract failed: '+str(unchanged.status_code))
+            print('ESC_BUILDER_TEXT_EDITOR_CONTRACT='+str({
+              'table':table_id,'readHTTP':200,'staleHTTP':409,'noOpSaveHTTP':200,
+              'rows':len(edt['rows'])
+            }))
+          # home_02 must expose its 5 visible text fields, including the
+          # HTML-backed description as safe plain text. Read and stale-write
+          # guard only: never modify customer content in this QA.
+          home02=session.post(root+'/wp-json/esc-builder/v1/editable-text',json={
+            'ticket':ticket,'page_id':page_id,'table_id':'home_02'
+          },headers=edit_headers,timeout=40)
+          if home02.status_code!=200:
+            raise SystemExit('home_02 text editor read HTTP '+str(home02.status_code)+
+                             ' code='+str(home02.json().get('code',''))[:70])
+          h2=home02.json()
+          fields={row.get('field'):row for row in h2.get('rows',[])}
+          expected={'eyebrow','title','video_title','button_text','description'}
+          if not expected.issubset(fields):
+            raise SystemExit('home_02 missing editable fields: '+str(sorted(expected-set(fields))))
+          for field in expected:
+            if not fields[field].get('editable') or len(fields[field].get('hash',''))!=64:
+              raise SystemExit('home_02 field not editable: '+field)
+          description=fields['description']
+          if '<p>' in description['title'] or '</' in description['title']:
+            raise SystemExit('home_02 HTML leaked into plain-text editor')
+          stale02=session.post(root+'/wp-json/esc-builder/v1/save-text',json={
+            'ticket':ticket,'page_id':page_id,'table_id':'home_02',
+            'field':'description','row':0,'title':description['title'],
+            'original_hash':description['hash'],'expected_version':'0'*64
+          },headers=edit_headers,timeout=40)
+          if stale02.status_code!=409:
+            raise SystemExit('home_02 rejected stale-version guard: '+str(stale02.status_code))
+          print('ESC_BUILDER_HOME02_TEXT_CONTRACT='+str({
+            'field_count':len(fields),'required_fields_editable':True,
+            'description_plain_text':True,'staleHTTP':409,'wroteContent':False}))
+          # Remaining homepage ESC Tables are typed: a live API source is
+          # only allowed to edit its ESC Table heading, never external post/
+          # product/category text. Static tables also expose their own cells.
+          readonly_dynamic={'home_03','home_04','home_05','home_06',
+                            'home_07','home_08','home_10','home_12'}
+          static_fields={'home_09':{'title','description'},
+                         'home_11':{'title'},'home_13':{'customer'}}
+          for index in range(3,14):
+            tid='home_'+str(index).zfill(2)
+            resp=session.post(root+'/wp-json/esc-builder/v1/editable-text',
+              json={'ticket':ticket,'page_id':page_id,'table_id':tid},
+              headers=edit_headers,timeout=40)
+            if resp.status_code!=200:
+              raise SystemExit(tid+' editable-text HTTP '+str(resp.status_code))
+            payload=resp.json()
+            section=payload.get('section_title') or {}
+            if not section.get('editable') or len(section.get('hash',''))!=64:
+              raise SystemExit(tid+' section heading is not editable')
+            rows=payload.get('rows',[])
+            present={entry.get('field') for entry in rows}
+            if tid in static_fields:
+              if not static_fields[tid].issubset(present):
+                raise SystemExit(tid+' missing static fields: '+str(static_fields[tid]-present))
+            elif tid=='home_10':
+              if present-{'section_description'}:
+                raise SystemExit('home_10 exposes unexpected API-backed text')
+            elif rows:
+              raise SystemExit(tid+' exposes API-backed row as editable ESC Table data')
+            if any(not isinstance(row.get('title'),str) for row in rows):
+              raise SystemExit(tid+' has invalid edit row')
+            print('BUILDER_REMAINING_EDIT_FIELDS='+str({
+              'id':tid,'heading':True,'fields':sorted(present),
+              'rowCount':len(rows),'write':False}))
+          stale03=session.post(root+'/wp-json/esc-builder/v1/save-text',json={
+            'ticket':ticket,'page_id':page_id,'table_id':'home_03',
+            'field':'section_title','row':'section',
+            'title':'ESC QA unchanged','original_hash':'0'*64,
+            'expected_version':'0'*64
+          },headers=edit_headers,timeout=40)
+          if stale03.status_code!=409:
+            raise SystemExit('home_03 stale heading guard HTTP '+str(stale03.status_code))
+          print('BUILDER_REMAINING_EDIT_CONTRACT_PASS: home_03..13 read-only QA; stale 409; customer data not written.')
+          # Full-stack check: one SSR request refreshes ONE section after
+          # ticket verification. No WordPress edits/build/cache writes.
+          live=session.get(src + '&refresh_table=home_00',timeout=110)
+          if live.status_code!=200:
+            raise SystemExit('Builder refreshed iframe HTTP '+str(live.status_code))
+          refresh=live.headers.get('X-ESC-Builder-Section-Refresh','')
+          if refresh!='updated':
+            raise SystemExit('Builder refresh failed or served stale, header='+str(refresh)[:45])
+          parsed=BeautifulSoup(live.text,'html.parser')
+          updated=parsed.select_one('[data-tablepress-preview="home_00"]')
+          if not updated:
+            raise SystemExit('Builder refresh rendered without home_00 wrapper')
+          if not parsed.select_one('[data-esc-builder-refresh-status]'):
+            raise SystemExit('Builder refresh lacks visible update confirmation')
+          image_sources=[img.get('src','') for img in updated.select('img[src]')]
+          direct=sum('/wp-content/uploads/' in url and '/api/images/' not in url for url in image_sources)
+          proxy=sum('/api/images/' in url for url in image_sources)
+          print(f'ESC Builder LIVE SSR PASS: home_00 updated; images={len(image_sources)} direct_uploads={direct} legacy_proxy={proxy} (paths omitted).')
+          print('ESC Builder WordPress CONTRACT PASS: changes metadata 200; one home_00 source 200; invalid ticket 403.')
+          PY

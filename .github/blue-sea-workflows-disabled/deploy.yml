@@ -1,0 +1,269 @@
+name: Deploy Blue Sea Astro Production
+
+on:
+  repository_dispatch:
+    types: [wp_trigger_build]
+  workflow_dispatch:
+    inputs:
+      refresh_product_seo_h1:
+        description: "Refresh 160 verified product H1 values from WordPress in existing Astro cache"
+        required: false
+        type: boolean
+        default: false
+  push:
+    branches:
+      - main
+    paths:
+      - 'requests/deploy-xuongmunonbaohiem.txt'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: xuongmunonbaohiem-actions-deploy
+  cancel-in-progress: false
+
+jobs:
+  web-deploy:
+    name: Build and Deploy
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Resolve WC_URL from ENV_FILE
+        shell: bash
+        env:
+          ENV_FILE: ${{ secrets.ENV_FILE }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import os,re
+          from urllib.parse import urlsplit
+          values=[]
+          for line in os.environ.get("ENV_FILE","").splitlines():
+              line=line.strip()
+              if line.startswith("export "): line=line[7:].strip()
+              if line.startswith("WC_URL="):
+                  val=line.partition("=")[2].strip()
+                  if len(val)>1 and val[0]==val[-1] and val[0] in ("'",'"'): val=val[1:-1]
+                  values.append(val)
+          if len(values)!=1: raise SystemExit("Exactly one WC_URL required in ENV_FILE")
+          url=urlsplit(values[0])
+          host=(url.hostname or "").lower()
+          if (url.scheme!="https" or not re.fullmatch(r"[a-z0-9.-]+",host)
+                  or "." not in host or ".." in host or url.username or url.password
+                  or url.port not in (None,443) or url.path not in ("","/")
+                  or url.query or url.fragment): raise SystemExit("Invalid WC_URL")
+          with open(os.environ["GITHUB_ENV"],"a",encoding="utf8") as out:
+              out.write("WC_URL=https://"+host+"\n")
+          print("WordPress URL derived from ENV_FILE:",host)
+          PY
+      - name: Checkout Actions Hub for safe deploy scripts and optional H1 cache repair
+        uses: actions/checkout@v4
+        with:
+          path: actions-hub
+
+      - name: Validate required secrets
+        shell: bash
+        env:
+          SOURCE_REPO_PAT: ${{ secrets.SOURCE_REPO_PAT }}
+          ENV_FILE: ${{ secrets.ENV_FILE }}
+          FTP_SERVER: ${{ secrets.FTP_SERVER }}
+          FTP_USERNAME: ${{ secrets.FTP_USERNAME }}
+          FTP_PASSWORD: ${{ secrets.FTP_PASSWORD }}
+        run: |
+          set -euo pipefail
+          test -n "$SOURCE_REPO_PAT"
+          test -n "$ENV_FILE"
+          test -n "$FTP_SERVER"
+          test -n "$FTP_USERNAME"
+          test -n "$FTP_PASSWORD"
+
+      - name: Checkout private Blue Sea Astro source
+        uses: actions/checkout@v4
+        with:
+          repository: ngocnhanvo/xuongmunonbaohiem-astro
+          ref: master
+          token: ${{ secrets.SOURCE_REPO_PAT }}
+          path: source
+          persist-credentials: false
+
+      - name: Show production source revision
+        working-directory: source
+        run: echo "Deploying xuongmunonbaohiem-astro@master $(git rev-parse HEAD)"
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: "pnpm"
+          cache-dependency-path: source/pnpm-lock.yaml
+
+      - name: Install dependencies
+        working-directory: source
+        run: pnpm install --frozen-lockfile
+
+      - name: Make .env
+        working-directory: source
+        shell: bash
+        env:
+          ENV_FILE: ${{ secrets.ENV_FILE }}
+        run: printf '%s\n' "$ENV_FILE" > .env
+
+      - name: Restore and update Astro cache
+        uses: actions/cache@v4
+        with:
+          path: source/.cache
+          key: ${{ runner.os }}-xuongmunonbaohiem-dot-cache-${{ github.run_id }}
+          restore-keys: |
+            ${{ runner.os }}-xuongmunonbaohiem-dot-cache-
+
+      - name: Repair only verified product SEO H1 metadata in cache
+        if: ${{ (github.event_name == 'push' && contains(github.event.head_commit.message, '[refresh-product-h1-cache]')) || (github.event_name == 'workflow_dispatch' && inputs.refresh_product_seo_h1) || (github.event_name == 'repository_dispatch' && github.event.client_payload.refresh_product_seo_h1 == true) }}
+        env:
+          ASTRO_CACHE_DIR: source/.cache
+          H1_MANIFEST: actions-hub/reports/product-h1-verified-candidates.json
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --test actions-hub/scripts/refresh-product-h1-cache.test.mjs
+          node actions-hub/scripts/refresh-product-h1-cache.mjs
+          echo "Refreshed only the verified 160 product H1 metadata fields without image regeneration." >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Force Page cache refresh for Action migrations
+        if: ${{ github.event_name == 'push' && contains(github.event.head_commit.message, '[force-page-cache]') }}
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -f .cache/data.json .cache/pages.json
+          echo "Explicitly refreshed cached WordPress Pages for Action migration."
+
+      - name: Build Project
+        working-directory: source
+        run: pnpm run build-git
+
+      - name: Verify compiled standalone server parses before FTP
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --check dist/server/entry.mjs
+
+      - name: Zip Build Folder
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p deploy upload
+          cp .env deploy/
+          cp -r dist/* deploy/
+          cd deploy
+          zip -r ../upload/escvn.zip .
+          cd ..
+          rm -rf dist deploy
+
+      # Preserve the output of a successful build so a transient FTP failure
+      # does not force a second identical Astro build on manual recovery.
+      - name: Archive deployment package for FTP recovery
+        uses: actions/upload-artifact@v4
+        with:
+          name: blue-sea-ftp-package
+          path: source/upload/escvn.zip
+          if-no-files-found: error
+          retention-days: 2
+          compression-level: 0
+
+      - name: Prepare lftp without unnecessary apt index refresh
+        shell: bash
+        run: |
+          set -euo pipefail
+          started=$SECONDS
+          if ! command -v lftp >/dev/null 2>&1; then
+            # Ubuntu runners usually have usable apt indexes already.
+            # Refresh only if direct installation fails.
+            if ! sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends lftp; then
+              echo "::warning::lftp install needed an apt index refresh; retrying."
+              sudo apt-get update -y -qq
+              sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends lftp
+            fi
+          fi
+          lftp --version
+          elapsed=$((SECONDS - started))
+          echo "lftp setup completed in ${elapsed}s"
+          echo "- lftp setup: ${elapsed}s" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Resolve Astro FTP target
+        id: ftp_target
+        shell: bash
+        env:
+          ENV_FILE: ${{ secrets.ENV_FILE }}
+          FTP_ASTRO_DIR: ${{ vars.FTP_ASTRO_DIR }}
+          FTP_SERVER: ${{ secrets.FTP_SERVER }}
+          FTP_USERNAME: ${{ secrets.FTP_USERNAME }}
+          FTP_PASSWORD: ${{ secrets.FTP_PASSWORD }}
+        run: |
+          set -euo pipefail
+          url=$(printf '%s\n' "$ENV_FILE" | sed -n 's/^WC_URL_CLIENT=//p' | tail -1 | tr -d '\r\"\047')
+          [[ "$url" =~ ^https?://([a-zA-Z0-9.-]+)(:[0-9]+)?/?$ ]] || { echo '::error::Invalid or missing WC_URL_CLIENT in ENV_FILE'; exit 1; }
+          host="${BASH_REMATCH[1],,}"
+          [[ "$host" == *.* && "$host" != *..* && "$host" =~ ^[a-z0-9.-]+$ ]] || exit 1
+          default_dir="/domains/$host/public_html/"
+          target="${FTP_ASTRO_DIR:-$default_dir}"
+          [[ "$target" =~ ^/[a-zA-Z0-9._/-]+/$ && "$target" != *..* && "$target" != *'//'* ]] || { echo '::error::Unsafe FTP target'; exit 1; }
+          echo "Using FTP target: $target (frontend: $host)"
+          if [[ "$target" != "$default_dir" ]]; then echo '::warning::Explicit FTP_ASTRO_DIR override in use'; fi
+          lftp -u "$FTP_USERNAME","$FTP_PASSWORD" "ftp://$FTP_SERVER" <<LFTP
+          set cmd:fail-exit yes
+          set net:max-retries 3
+          set net:timeout 30
+          set ftp:passive-mode yes
+          set ssl:verify-certificate no
+          cd "$target"
+          pwd
+          bye
+          LFTP
+          echo "path=$target" >> "$GITHUB_OUTPUT"
+      - name: Verify signed WordPress unzip protocol before uploading
+        shell: bash
+        env:
+          SOURCE_REPO_PAT: ${{ secrets.SOURCE_REPO_PAT }}
+          ENV_FILE: ${{ secrets.ENV_FILE }}
+          ASTRO_FTP_TARGET: ${{ steps.ftp_target.outputs.path }}
+          FTP_ASTRO_DIR: ${{ vars.FTP_ASTRO_DIR }}
+          ZIP_PATH: source/upload/escvn.zip
+        run: |
+          set -euo pipefail
+          python3 -m py_compile actions-hub/scripts/esc-remote-unzip.py
+          python3 actions-hub/scripts/esc-remote-unzip.py verify
+      - name: Sync files via resumable FTP
+        shell: bash
+        env:
+          FTP_SERVER: ${{ secrets.FTP_SERVER }}
+          FTP_USERNAME: ${{ secrets.FTP_USERNAME }}
+          FTP_PASSWORD: ${{ secrets.FTP_PASSWORD }}
+          ASTRO_FTP_TARGET: ${{ steps.ftp_target.outputs.path }}
+          ZIP_PATH: source/upload/escvn.zip
+        run: |
+          set -euo pipefail
+          bash actions-hub/scripts/esc-resumable-ftp.sh
+      - name: Trigger signed remote unzip and validate Astro artifact
+        shell: bash
+        env:
+          SOURCE_REPO_PAT: ${{ secrets.SOURCE_REPO_PAT }}
+          ENV_FILE: ${{ secrets.ENV_FILE }}
+          ASTRO_FTP_TARGET: ${{ steps.ftp_target.outputs.path }}
+          FTP_ASTRO_DIR: ${{ vars.FTP_ASTRO_DIR }}
+          ZIP_PATH: source/upload/escvn.zip
+        run: |
+          set -euo pipefail
+          started=$SECONDS
+          python3 actions-hub/scripts/esc-remote-unzip.py unpack
+          elapsed=$((SECONDS - started))
+          echo "Signed remote unzip completed in ${elapsed}s"
+          echo "- Authenticated remote unzip: ${elapsed}s" >> "$GITHUB_STEP_SUMMARY"

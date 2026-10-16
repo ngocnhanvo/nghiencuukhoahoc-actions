@@ -1,0 +1,10 @@
+2026-10-10: Verify home_01 six editable image cells and secure WordPress Media REST source after PHP FTP SUCCESS run 38045978997. Read only, check bad token, invalid media ID, unchanged version; no customer writes.
+2026-10-10: Diagnose home_01 gallery raw image value type/markers after production REST read returned 0 recognized rows (run 38046080704). No URLs or customer text in logs; read-only table-batch source.
+
+2026-10-10: Determine image IMG src scheme only; raw ESC Table image cells are img HTML length 165-179 with <img> and src attribute but initial API rejected all six. No content printed, no writes.
+
+2026-10-10: Retest six home_01 image fields after PHP f30739ff FTP PASS 38046468762; relative IMG source parser now supported. No live gallery changes.
+
+2026-10-10: Read-only production contract after PHP SEO deploy success 38052577614, source QA PASS 38052471902. Selected home_01 image row 0 must expose html_alt, Media alt/title/caption/description with types, and preserve table version; no content writes.
+
+2026-10-10: Production no-write API QA after PHP image+Alt master 5b3e84b0 FTP run 38053939423 PASS. Verify invalid ALT HTTP400, stale ALT-only HTTP409, six rows and hashes unchanged. Never make any successful save in this workflow.
