@@ -38,7 +38,10 @@ jobs:
           set -euo pipefail
           node --input-type=module <<'JS'
           import fs from 'node:fs';
-          import { transform } from '@astrojs/compiler';
+          import { createRequire } from 'node:module';
+          const rootRequire = createRequire(import.meta.url);
+          const compilerRequire = createRequire(rootRequire.resolve('astro'));
+          const { transform } = compilerRequire('@astrojs/compiler');
           import ts from 'typescript';
           const name = 'src/pages/so-tay/index.astro';
           const source = fs.readFileSync(name, 'utf8');
