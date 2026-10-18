@@ -100,7 +100,7 @@ jobs:
             for key,value in safe.items(): f.write(key+'='+value+'\\n')
           with open(os.environ['GITHUB_ENV'],'a',encoding='utf8') as f:
             for key,value in safe.items(): f.write(key+'='+value+'\\n')
-                    print('Environment verified for NCKH only (values hidden).')
+          print('Environment verified for NCKH only (values hidden).')
           PY
 
       - name: Install and build Astro on GitHub runner
