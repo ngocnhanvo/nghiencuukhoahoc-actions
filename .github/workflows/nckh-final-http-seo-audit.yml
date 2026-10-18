@@ -47,7 +47,7 @@ jobs:
                   lines.append('- HTML title: '+(html.unescape(titles[0])[:160] if titles else '(none)'))
                   lines.append('- Canonical: '+(canon[0][:180] if canon else '(not detected)'))
                   lines.append('- Meta description: '+(desc[0][:140] if desc else '(not detected)'))
-                lines.append('- H1 count: '+str(len(re.findall(r'<h1(?=[\s>])',plain,re.I))))
+                  lines.append('- H1 count: '+str(len(re.findall(r'<h1(?=[\s>])',plain,re.I))))
               except urllib.error.HTTPError as e:
                 lines.append('- '+protocol.upper()+': HTTP '+str(e.code))
               except Exception as e:
