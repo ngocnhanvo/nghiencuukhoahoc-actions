@@ -66,7 +66,15 @@ jobs:
           JS
       - name: Check strict NCKH TypeScript only (legacy source excluded)
         working-directory: source
-        run: pnpm exec tsc --project tsconfig.nckh.json --pretty false
+        shell: bash
+        run: |
+          set -euo pipefail
+          # The inherited pnpm lockfile does not declare @types/node at root.
+          # Keep production package.json / pnpm-lock untouched; install test-only types
+          # in an isolated runner directory and point tsc there explicitly.
+          mkdir -p "$RUNNER_TEMP/nckh-types"
+          npm install --prefix "$RUNNER_TEMP/nckh-types" --no-audit --no-fund --no-save --ignore-scripts --package-lock=false @types/node@22
+          pnpm exec tsc --project tsconfig.nckh.json --pretty false --typeRoots "$RUNNER_TEMP/nckh-types/node_modules/@types"
       - name: Run focused NCKH API client tests
         working-directory: source
         run: pnpm exec vitest run src/lib/nckh/notebookClient.test.ts src/lib/nckh/googleOidc.test.ts src/lib/nckh/serverWp.test.ts src/lib/nckh/serverSession.test.ts src/lib/nckh/researchProgress.test.ts src/lib/nckh/notebookExport.test.ts
