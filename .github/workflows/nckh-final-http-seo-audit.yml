@@ -39,7 +39,7 @@ jobs:
               try:
                 status,final,body=get(url)
                 plain=body.decode('utf8','replace')
-                lines.append('- '+protocol.upper()+': HTTP '+str(status)+', final='+urllib.parse.urlparse(final).scheme+'://'+str(urllib.parse.urlparse(final).hostname)+', EduResearch='+str('EduResearch Hub' in plain)+', old Blue Sea='+str(bool(re.search('xuongmunonbaohiem|blue.?sea',plain,re.I)))')
+                lines.append('- '+protocol.upper()+': HTTP '+str(status)+', final='+urllib.parse.urlparse(final).scheme+'://'+str(urllib.parse.urlparse(final).hostname)+', EduResearch='+str('EduResearch Hub' in plain)+', old Blue Sea='+str(bool(re.search('xuongmunonbaohiem|blue.?sea',plain,re.I))))
                 if protocol=='http' and host.endswith('webnvn.com'):
                   titles=re.findall(r'<title[^>]*>([^<]*)</title>',plain,re.I)
                   desc=re.findall(r'<meta[^>]*name=["\']description["\'][^>]*content=["\']([^"\']+)',plain,re.I)
