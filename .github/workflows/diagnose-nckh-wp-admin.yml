@@ -1,0 +1,81 @@
+name: Diagnose NCKH WordPress admin (read-only)
+
+on:
+  issues:
+    types: [opened]
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  check-admin:
+    if: github.repository == 'ngocnhanvo/nghiencuukhoahoc-actions' && github.event.issue.title == '[diagnose] NCKH WordPress admin' && github.event.issue.user.login == 'ngocnhanvo'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      WP_ADMIN_USERNAME: ${{ secrets.WP_ADMIN_USERNAME }}
+      WP_ADMIN_PASSWORD: ${{ secrets.WP_ADMIN_PASSWORD }}
+      GH_TOKEN: ${{ github.token }}
+      ISSUE_NUMBER: ${{ github.event.issue.number }}
+    steps:
+      - name: Verify hostname, credential presence, and admin capabilities without changing data
+        shell: bash
+        run: |
+          set -euo pipefail
+          set +x
+          base='https://api-nghiencuukhoahoc.webnvn.com'
+          report="${RUNNER_TEMP}/nckh-admin-report.md"
+          jar="${RUNNER_TEMP}/wp-admin-cookies"
+          printf '## NCKH WordPress admin access check\n\nTarget: `%s`\n\n' "$base" > "$report"
+          report_result() {
+            gh api -X POST "repos/${GITHUB_REPOSITORY}/issues/${ISSUE_NUMBER}/comments" -F body=@"$report" >/dev/null || true
+          }
+          trap report_result EXIT
+          if [ -n "${WP_ADMIN_USERNAME:-}" ]; then uname='configured'; else uname='missing'; fi
+          if [ -n "${WP_ADMIN_PASSWORD:-}" ]; then pass='configured'; else pass='missing'; fi
+          printf 'GitHub Actions secret `WP_ADMIN_USERNAME`: **%s**.\n\n' "$uname" >> "$report"
+          printf 'GitHub Actions secret `WP_ADMIN_PASSWORD`: **%s**.\n\n' "$pass" >> "$report"
+          status=$(curl -sS -k --connect-timeout 9 --max-time 15 -o "${RUNNER_TEMP}/wp-home.txt" -w '%{http_code}' "$base/" 2>/dev/null || true)
+          status="${status:-000}"
+          printf 'Public website GET: **HTTP %s**.\n\n' "$status" >> "$report"
+          login_code=$(curl -sS -k --connect-timeout 9 --max-time 15 -b "$jar" -c "$jar" -o "${RUNNER_TEMP}/wp-login.html" -w '%{http_code}' "$base/wp-login.php" 2>/dev/null || true)
+          login_code="${login_code:-000}"
+          printf 'Login page GET: **HTTP %s**.\n\n' "$login_code" >> "$report"
+          if [ "$status" = "000" ] || [ "$login_code" = "000" ]; then
+            printf 'Conclusion: **cannot test authentication** because the website/login is unreachable from GitHub Actions runner.\n' >> "$report"
+            exit 0
+          fi
+          if [ "$uname" != 'configured' ] || [ "$pass" != 'configured' ]; then
+            printf 'Conclusion: **cannot test login** with the credentials currently available in NCKH Actions secrets. No password was attempted.\n' >> "$report"
+            exit 0
+          fi
+          if [ "$login_code" != '200' ]; then
+            printf 'Conclusion: **cannot test login** (login endpoint not HTTP 200).\n' >> "$report"
+            exit 0
+          fi
+          # Exactly one login attempt; no post/page edits. Always redact secret values.
+          login_result=$(curl -sS -k -L --max-redirs 5 --connect-timeout 9 --max-time 25 \
+            -b "$jar" -c "$jar" \
+            --data-urlencode "log=${WP_ADMIN_USERNAME}" \
+            --data-urlencode "pwd=${WP_ADMIN_PASSWORD}" \
+            --data-urlencode 'wp-submit=Log In' \
+            --data-urlencode "redirect_to=${base}/wp-admin/" \
+            --data-urlencode 'testcookie=1' \
+            -o "${RUNNER_TEMP}/wp-after-login.html" \
+            -w '%{http_code} %{url_effective}' \
+            "$base/wp-login.php" 2>/dev/null || true)
+          printf 'Login request: **sent once**; result: `%s`.\n\n' "$login_result" >> "$report"
+          if [[ "$login_result" == *wp-login.php* ]] || [[ "$login_result" == '000 '* ]] || [[ "$login_result" == '403 '* ]]; then
+            printf 'Conclusion: **login not verified**. Possible invalid credentials, anti-bot/CAPTCHA, login restriction, or blocked request. No claim about role.\n' >> "$report"
+            exit 0
+          fi
+          for route in users.php options-general.php; do
+            response=$(curl -sS -k -L --max-redirs 5 --connect-timeout 9 --max-time 25 \
+              -b "$jar" -c "$jar" -o "${RUNNER_TEMP}/route-${route}.html" \
+              -w '%{http_code} %{url_effective}' "$base/wp-admin/$route" 2>/dev/null || true)
+            safe="$(printf '%s' "$response" | sed -E 's|([?&])(redirect_to|reauth|wpnonce)=[^& ]*|\1\2=REDACTED|g')"
+            printf 'Admin route `%s`: `%s`.\n\n' "$route" "$safe" >> "$report"
+          done
+          printf 'Interpretation: HTTP 200 on `/wp-admin/users.php` and `/wp-admin/options-general.php` without a login redirect supports administrator-level access. A blocked/redirected page is inconclusive when custom WordPress security plugins are present.\n\n' >> "$report"
+          printf 'Only GET requests plus one login POST were used; no site content, settings or users were modified. Credential values are not included.\n' >> "$report"
