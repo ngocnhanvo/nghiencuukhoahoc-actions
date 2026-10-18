@@ -48,7 +48,7 @@ jobs:
           const compiled = await transform(source, { filename: name });
           if (!compiled.code || compiled.errors?.length) throw Error('Astro page parse failed');
           console.log('PASS: New Sổ tay Astro page compiles');
-          for (const file of ['src/lib/nckh/notebookClient.ts','src/lib/nckh/notebookClient.test.ts']) {
+          for (const file of ['src/lib/nckh/notebookClient.ts','src/lib/nckh/notebookClient.test.ts','src/lib/nckh/googleOidc.ts','src/lib/nckh/googleOidc.test.ts']) {
             const result = ts.transpileModule(fs.readFileSync(file, 'utf8'), {
               fileName: file, reportDiagnostics: true,
               compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022 }
@@ -60,6 +60,6 @@ jobs:
           JS
       - name: Run focused NCKH API client tests
         working-directory: source
-        run: pnpm exec vitest run src/lib/nckh/notebookClient.test.ts
+        run: pnpm exec vitest run src/lib/nckh/notebookClient.test.ts src/lib/nckh/googleOidc.test.ts
       - name: Staging only assertion
         run: echo "No FTP, no staging writes, no OAuth login, no Astro master merge."
