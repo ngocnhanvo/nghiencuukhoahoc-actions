@@ -36,7 +36,7 @@ jobs:
           report=sys.argv[1]
           class FormFields(HTMLParser):
               def __init__(self):
-                  super().__init__();self.inside=False;self.inputs=[];self.select=None;self.option=None;self.textarea=None
+                  super().__init__();self.inside=True;self.inputs=[];self.select=None;self.option=None;self.textarea=None
               def handle_starttag(self,tag,attrs):
                   a=dict(attrs)
                   if tag=="form" and "options.php" in a.get("action",""): self.inside=True
@@ -67,7 +67,7 @@ jobs:
                   if tag=="textarea" and self.textarea is not None:
                       if self.textarea["name"]:self.inputs.append((self.textarea["name"],self.textarea["value"]))
                       self.textarea=None
-                  if tag=="form" and self.inside:self.inside=False
+                  if tag=="form":pass
           jar=http.cookiejar.CookieJar()
           opener=urllib.request.build_opener(urllib.request.HTTPCookieProcessor(jar))
           def fetch(url,data=None,headers=None):
@@ -87,6 +87,7 @@ jobs:
           p=FormFields();p.feed(doc.decode("utf8","replace"))
           params=p.inputs
           values=dict(params)
+          log("Form contains "+str(len(params))+" fields, required field names: "+", ".join(k for k in ("option_page","action","_wpnonce","siteurl","home") if k in values))
           old_siteurl=values.get("siteurl","")
           old_home=values.get("home","")
           log("Previous siteurl: `"+old_siteurl+"`")
