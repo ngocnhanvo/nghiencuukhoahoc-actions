@@ -49,7 +49,7 @@ jobs:
             got[key]=value
           assert got.get('WC_URL','').rstrip('/')=='https://api-nghiencuukhoahoc.webnvn.com','Wrong WP URL in ENV_FILE'
           assert got.get('WC_URL_CLIENT','').rstrip('/') in ('https://nghiencuukhoahoc.id.vn','https://nghiencuukhoahoc.webnvn.com'),'Wrong NCKH client origin'
-          got.update({'cacheAll':'false','cachePage':'false','cacheProduct':'false','cacheTablePress':'false','cacheRedirect':'false','cacheMenu':'false','cacheProductCategory':'false','NODE_ENV':'production'})
+          got.update({'cacheAll':'false','cachePage':'false','cacheProduct':'false','cacheTablePress':'false','cacheRedirect':'false','cacheMenu':'false','cacheProductCategory':'false','NODE_ENV':'production','NCKH_HOMEPAGE_ONLY_BUILD':'true'})
           with open(os.environ['GITHUB_ENV'],'a') as f:
             for k,v in got.items():f.write(k+'='+v+'\n')
           PY
