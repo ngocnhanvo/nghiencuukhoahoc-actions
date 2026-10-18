@@ -1,0 +1,54 @@
+name: NCKH changed Astro components parse
+on:
+  issues:
+    types: [opened]
+permissions:
+  contents: read
+  issues: write
+jobs:
+  validate:
+    if: github.repository == 'ngocnhanvo/nghiencuukhoahoc-actions' && github.event.issue.title == '[nckh] Parse changed Astro'
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    env:
+      SOURCE_PAT: ${{ secrets.SOURCE_REPO_PAT }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Validate syntax of changed Astro files without build or deploy
+        shell: bash
+        run: |
+          set -euo pipefail
+          report="${RUNNER_TEMP}/report.md"
+          printf '## NCKH modified Astro file parse\n\n' > "$report"
+          done_report() {
+            rc=$?
+            printf '\nValidation exit code: %s\n' "$rc" >> "$report"
+            gh api -X POST "repos/${GITHUB_REPOSITORY}/issues/${{ github.event.issue.number }}/comments" -F body=@"$report" >/dev/null || true
+          }
+          trap done_report EXIT
+          git config --global url."https://x-access-token:${SOURCE_PAT}@github.com/".insteadOf "https://github.com/"
+          cd "${RUNNER_TEMP}"
+          git clone -q --depth 1 --single-branch --branch github https://github.com/ngocnhanvo/nghiencuukhoahoc-astro.git source
+          cd source
+          printf 'Astro github commit: `%s`\n\n' "$(git rev-parse HEAD)" >> "$report"
+          corepack enable >/dev/null 2>&1
+          corepack prepare pnpm@9 --activate >/dev/null 2>&1
+          pnpm install --frozen-lockfile --ignore-scripts > "${RUNNER_TEMP}/install.log" 2>&1
+          node --input-type=module > "${RUNNER_TEMP}/parse.log" 2>&1 <<'NODE'
+          import { transform } from '@astrojs/compiler';
+          import { readFile } from 'node:fs/promises';
+          const files = [
+            'src/astro/pages/HomePage.astro',
+            'src/astro/components/Layout/Header.astro',
+            'src/astro/components/Layout/Footer.astro',
+            'src/astro/components/Layout/Layout.astro',
+            'src/astro/components/Layout/Head.astro',
+            'src/pages/nckh-home-demo.astro'
+          ];
+          for (const path of files) {
+            await transform(await readFile(path,'utf8'),{filename:path});
+            console.log('PASS '+path);
+          }
+          NODE
+          cat "${RUNNER_TEMP}/parse.log" >> "$report"
+          printf '\nNo FTP, WordPress writes, merge or deployment.\n' >> "$report"
