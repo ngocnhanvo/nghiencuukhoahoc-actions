@@ -97,9 +97,9 @@ jobs:
             'cacheMenu':'false',
           }
           with open('.env','w',encoding='utf8') as f:
-            for key,value in safe.items(): f.write(key+'='+value+'\\n')
+            for key,value in safe.items(): f.write(key+'='+value+'\n')
           with open(os.environ['GITHUB_ENV'],'a',encoding='utf8') as f:
-            for key,value in safe.items(): f.write(key+'='+value+'\\n')
+            for key,value in safe.items(): f.write(key+'='+value+'\n')
           print('Environment verified for NCKH only (values hidden).')
           PY
 
