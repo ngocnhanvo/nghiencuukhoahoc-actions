@@ -58,6 +58,7 @@ jobs:
           suffix=secrets.token_hex(4)
           project_id=None
           section_id=None
+          second_id=None
           try:
               status,new=api('projects','POST',{'title':'[NCKH-STAGING-QA] '+suffix,'summary':'Dữ liệu test tự động, không phải học sinh thật'})
               if status!=201:raise RuntimeError('Create project failed '+str(status)+' '+str(new.get('code','')))
@@ -85,11 +86,37 @@ jobs:
               if status!=409 or conflict.get('code')!='nckh_conflict':
                   raise RuntimeError('Stale write was not rejected')
               print('PASS: Concurrent tab stale save rejected with HTTP 409.')
+              status,second=api('projects/'+str(project_id)+'/sections','POST',{'title':'Kiểm chứng atomic reorder'})
+              if status!=201:raise RuntimeError('Second section create failed')
+              second_id=int(second['id'])
+              status,ordered=api('projects/'+str(project_id)+'/reorder','POST',{
+                  'items':[{'id':second_id,'version':1},{'id':section_id,'version':2}]
+              })
+              if status!=200 or len(ordered.get('items',[]))!=2:
+                  raise RuntimeError('Atomic reorder rejected valid versioned request')
+              print('PASS: Atomic reorder returned both updated section versions.')
+              status,current=api('projects/'+str(project_id)+'/sections')
+              items=current.get('items',[])
+              if status!=200 or len(items)!=2 or int(items[0]['id'])!=second_id or int(items[1]['id'])!=section_id:
+                  raise RuntimeError('Ordered sections not persisted in real database')
+              print('PASS: Newly reordered sections survive fresh DB read.')
+              status,stale=api('projects/'+str(project_id)+'/reorder','POST',{
+                  'items':[{'id':section_id,'version':2},{'id':second_id,'version':1}]
+              })
+              if status!=409:raise RuntimeError('Stale reorder did not return HTTP 409')
+              status,still=api('projects/'+str(project_id)+'/sections')
+              if status!=200 or int(still['items'][0]['id'])!=second_id:
+                  raise RuntimeError('Failed reorder unexpectedly changed database order')
+              print('PASS: Stale reorder was fully rolled back.')
               status,del_result=api('sections/'+str(section_id),'DELETE')
               if status!=200 or del_result.get('deleted') is not True:raise RuntimeError('Could not remove QA section')
               section_id=None
-              print('PASS: Test section deleted after verification.')
+              status,removed=api('sections/'+str(second_id),'DELETE')
+              if status!=200 or removed.get('deleted') is not True:raise RuntimeError('Could not remove second QA section')
+              second_id=None
+              print('PASS: Both QA sections deleted after verification.')
           finally:
+              if second_id is not None:api('sections/'+str(second_id),'DELETE')
               if section_id is not None:
                   # Try best-effort cleanup of test section if no teacher comments exist.
                   api('sections/'+str(section_id),'DELETE')
