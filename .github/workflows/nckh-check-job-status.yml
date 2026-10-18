@@ -1,0 +1,23 @@
+name: NCKH check audit job status
+on:
+  issues:
+    types: [opened]
+permissions:
+  contents: read
+  actions: read
+  issues: write
+jobs:
+  check:
+    if: github.repository == 'ngocnhanvo/nghiencuukhoahoc-actions' && github.event.issue.title == '[nckh] Check archival run'
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - shell: bash
+        run: |
+          set -euo pipefail
+          report="${RUNNER_TEMP}/run-status.md"
+          echo '## NCKH archival workflow runs' > "$report"
+          gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/nckh-archive-legacy.yml/runs?per_page=8" \
+            --jq '.workflow_runs[] | "- run " + (.id|tostring) + ": " + .status + " / " + (.conclusion//"pending") + " — " + .html_url' >> "$report"
+          gh api -X POST "repos/${GITHUB_REPOSITORY}/issues/${{ github.event.issue.number }}/comments" -F body=@"$report" >/dev/null
