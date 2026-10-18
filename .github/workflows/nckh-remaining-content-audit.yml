@@ -1,0 +1,79 @@
+name: NCKH remaining public content inventory
+on:
+  issues:
+    types: [opened]
+permissions:
+  contents: read
+  issues: write
+jobs:
+  audit:
+    if: github.repository == 'ngocnhanvo/nghiencuukhoahoc-actions' && github.event.issue.title == '[nckh] Audit remaining content' && github.event.issue.user.login == 'ngocnhanvo'
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Count live content types and remaining Blue Sea references without writing
+        shell: bash
+        run: |
+          set -euo pipefail
+          report="${RUNNER_TEMP}/nckh-remaining.md"
+          python3 - "$report" <<'PY'
+          import sys,urllib.request,urllib.error,urllib.parse,json,re
+          report=sys.argv[1]
+          root='https://api-nghiencuukhoahoc.webnvn.com'
+          def fetch(path):
+            try:
+              req=urllib.request.Request(root+path,headers={'User-Agent':'NCKH-ReadOnly-Inventory/1.0'})
+              with urllib.request.urlopen(req,timeout=24) as res:
+                raw=res.read()
+                return res.status,dict(res.headers),raw
+            except urllib.error.HTTPError as error:
+              return error.code,{},b''
+            except Exception:
+              return 0,{},b''
+          routes=[
+            ('Bài viết công khai','/wp-json/wp/v2/posts?per_page=1'),
+            ('Trang công khai','/wp-json/wp/v2/pages?per_page=1'),
+            ('Media đính kèm','/wp-json/wp/v2/media?per_page=1'),
+            ('Danh mục bài viết','/wp-json/wp/v2/categories?per_page=1'),
+            ('Thẻ bài viết','/wp-json/wp/v2/tags?per_page=1'),
+            ('WooCommerce Store products','/wp-json/wc/store/v1/products?per_page=1'),
+            ('WordPress product REST','/wp-json/wp/v2/product?per_page=1'),
+            ('Woo product categories REST','/wp-json/wp/v2/product_cat?per_page=1'),
+            ('WP menus REST','/wp-json/wp/v2/menus?per_page=1')
+          ]
+          lines=['## NCKH remaining content (public read-only audit)','',
+            'Host: `api-nghiencuukhoahoc.webnvn.com`','','| Nhóm | HTTP | Số bản ghi từ REST (nếu có) |','|---|---:|---:|']
+          for label,path in routes:
+            status,h,raw=fetch(path)
+            count=h.get('X-WP-Total',h.get('X-WC-Store-API-Total',h.get('X-WC-Total','Không công bố')))
+            if not count.isdigit():count='Không xác minh'
+            lines.append('| '+label+' | '+str(status)+' | '+str(count)+' |')
+          lines.extend(['','### Public SEO files and URL leakage'])
+          status,h,raw=fetch('/wp-json/esc-seo-files/v1/public')
+          lines.append('- SEO Files endpoint status: **HTTP '+str(status)+'**.')
+          if status==200:
+            try:
+              obj=json.loads(raw)
+              for field in ('site','robots','llms'):
+                val=obj.get(field,'')
+                if field=='site':lines.append('- SEO Files canonical site: `'+str(val)[:150]+'`')
+                else:
+                  markers=bool(re.search(r'xuongmunonbaohiem|blue[ -]?sea|esc\.vn',str(val),re.I))
+                  lines.append('- SEO Files '+field+' has old-brand/domain markers: **'+str(markers).lower()+'**.')
+            except Exception:lines.append('- SEO payload could not be parsed safely.')
+          status,h,raw=fetch('/wp-json/wp/v2/pages?per_page=100&_fields=id,slug,title,content')
+          if status==200:
+            try:
+              pages=json.loads(raw)
+              old=[(p.get('id'),p.get('slug')) for p in pages
+                   if re.search(r'xuongmunonbaohiem|blue[ -]?sea|mũ bảo hiểm|nón bảo hiểm',json.dumps(p,ensure_ascii=False),re.I)]
+              lines.append('- Published pages still containing old brand/helmet references: **'+str(len(old))+' / '+str(len(pages))+'** in sample.')
+              lines.append('- Example page slugs requiring review: '+', '.join('`'+str(slug)+'`' for pid,slug in old[:12]))
+            except Exception:pass
+          lines.append('')
+          lines.append('HTTP 401/403/404 means counts are unavailable, not zero. No WordPress content or GitHub source was modified.')
+          with open(report,'w',encoding='utf8') as f:f.write('\n'.join(lines)+'\n')
+          PY
+          gh api -X POST "repos/${GITHUB_REPOSITORY}/issues/${{ github.event.issue.number }}/comments" -F body=@"$report" >/dev/null
