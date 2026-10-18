@@ -31,19 +31,19 @@ jobs:
           git clone -q --depth 1 --single-branch --branch github https://github.com/ngocnhanvo/nghiencuukhoahoc-astro.git source
           cd source
           printf 'Astro branch: `github`, commit `%s`.\n' "$(git rev-parse HEAD)" >> "$report"
-          corepack enable >/dev/null 2>&1
-          corepack prepare pnpm@9 --activate >/dev/null 2>&1
-          if ! pnpm install --frozen-lockfile --ignore-scripts > "${RUNNER_TEMP}/pnpm-install.log" 2>&1; then
-            echo 'Install failed:' >> "$report"
-            tail -n 15 "${RUNNER_TEMP}/pnpm-install.log" >> "$report"
+          mkdir -p "${RUNNER_TEMP}/parser"
+          if ! npm --prefix "${RUNNER_TEMP}/parser" install --no-save --ignore-scripts @astrojs/compiler@2.12.4 > "${RUNNER_TEMP}/parser-install.log" 2>&1; then
+            echo 'Standalone Astro parser installation failed:' >> "$report"
+            tail -n 15 "${RUNNER_TEMP}/parser-install.log" >> "$report"
             exit 1
           fi
           set +e
           node --input-type=module > "${RUNNER_TEMP}/parse.log" 2>&1 <<'NODE'
           import { createRequire } from 'node:module';
+          import { pathToFileURL } from 'node:url';
           import { readFile } from 'node:fs/promises';
-          const fromAstro = createRequire(new URL('./node_modules/astro/package.json', import.meta.url));
-          const { transform } = fromAstro('@astrojs/compiler');
+          const fromParser = createRequire(process.env.RUNNER_TEMP + '/parser/package.json');
+          const { transform } = await import(pathToFileURL(fromParser.resolve('@astrojs/compiler')).href);
           for (const file of ['src/pages/nckh-home-demo.astro','src/astro/pages/HomePage.astro',
                               'src/astro/components/Layout/Header.astro','src/astro/components/Layout/Footer.astro']) {
             const result = await transform(await readFile(file,'utf8'),{filename:file});
