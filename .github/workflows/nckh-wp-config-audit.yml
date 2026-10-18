@@ -1,0 +1,63 @@
+name: NCKH WP config HTTPS audit
+on:
+  issues:
+    types: [opened]
+permissions:
+  contents: read
+  issues: write
+jobs:
+  inspect:
+    if: github.repository == 'ngocnhanvo/nghiencuukhoahoc-actions' && github.event.issue.user.login == 'ngocnhanvo' && github.event.issue.title == '[nckh] Inspect WP config'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      FTP_SERVER: ${{ secrets.FTP_SERVER }}
+      FTP_USERNAME: ${{ secrets.FTP_USERNAME }}
+      FTP_PASSWORD: ${{ secrets.FTP_PASSWORD }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Read only non-secret WordPress URL configuration from NCKH FTPS
+        shell: bash
+        run: |
+          set -euo pipefail
+          set +x
+          report="${RUNNER_TEMP}/config-report.md"
+          printf '## NCKH wp-config.php URL audit\n\n' > "$report"
+          python3 - "$report" <<'PY'
+          import ftplib,os,sys,io,re
+          from urllib.parse import urlparse
+          output=sys.argv[1]
+          path='/domains/api-nghiencuukhoahoc.webnvn.com/public_html/wp-config.php'
+          dest='/domains/api-nghiencuukhoahoc.webnvn.com/public_html'
+          raw=os.environ["FTP_SERVER"]
+          parsed=urlparse(raw if "://" in raw else "ftps://"+raw)
+          f=ftplib.FTP_TLS()
+          f.connect(parsed.hostname,parsed.port or 21,timeout=15)
+          f.login(os.environ["FTP_USERNAME"],os.environ["FTP_PASSWORD"])
+          f.prot_p()
+          f.cwd(dest)
+          buf=io.BytesIO()
+          f.retrbinary('RETR wp-config.php',buf.write)
+          f.quit()
+          conf=buf.getvalue().decode('utf8','replace')
+          names=['DB_NAME','DB_HOST','WP_HOME','WP_SITEURL','FORCE_SSL_ADMIN','VCS_GH_REPO','ESC_VISUAL_BUILDER_ASTRO_URL']
+          with open(output,'a',encoding='utf8') as o:
+            for name in names:
+              pattern=r'define\\s*\\(\\s*[\'"]'+re.escape(name)+r'[\'"]\\s*,\\s*([^;]+)\\);'
+              matches=re.findall(pattern,conf)
+              if not matches:
+                o.write('- `'+name+'`: not explicitly defined.\n')
+                continue
+              if name in ('DB_NAME','DB_HOST'):
+                o.write('- `'+name+'`: configured; exact value withheld.\n')
+                continue
+              value=matches[-1].strip().strip("'\" ")
+              if value.startswith('http://') or value.startswith('https://') or name in ('FORCE_SSL_ADMIN','VCS_GH_REPO'):
+                if len(value)>140 or any(x in value for x in ['$', 'password','secret']):
+                  value='dynamic / not displayed'
+                o.write('- `'+name+'`: `'+value+'`\n')
+              else:
+                o.write('- `'+name+'`: defined (value withheld).\n')
+            o.write('\nNo wp-config.php changes. No credentials or full config source exposed.\n')
+          PY
+          gh api -X POST "repos/${GITHUB_REPOSITORY}/issues/${{ github.event.issue.number }}/comments" -F body=@"$report" >/dev/null
