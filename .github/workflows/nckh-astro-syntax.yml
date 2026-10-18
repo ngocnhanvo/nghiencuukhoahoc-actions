@@ -33,7 +33,12 @@ jobs:
           printf 'Astro github commit: `%s`\n\n' "$(git rev-parse HEAD)" >> "$report"
           corepack enable >/dev/null 2>&1
           corepack prepare pnpm@9 --activate >/dev/null 2>&1
-          pnpm install --frozen-lockfile --ignore-scripts > "${RUNNER_TEMP}/install.log" 2>&1
+          if ! pnpm install --frozen-lockfile --ignore-scripts > "${RUNNER_TEMP}/install.log" 2>&1; then
+            printf 'Dependency installation failed:\\n' >> "$report"
+            tail -n 14 "${RUNNER_TEMP}/install.log" >> "$report"
+            exit 1
+          fi
+          printf 'Dependencies installed.\\n' >> "$report"
           node --input-type=module > "${RUNNER_TEMP}/parse.log" 2>&1 <<'NODE'
           import { transform } from '@astrojs/compiler';
           import { readFile } from 'node:fs/promises';
