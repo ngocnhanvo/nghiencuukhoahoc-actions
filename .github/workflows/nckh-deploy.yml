@@ -26,7 +26,8 @@ jobs:
               || github.event.client_payload.site_domain == 'nghiencuukhoahoc.webnvn.com'))
         || (github.event_name == 'issues'
           && github.event.issue.user.login == 'ngocnhanvo'
-          && github.event.issue.title == '[nckh] First GitHub deploy'))
+          && (github.event.issue.title == '[nckh] First GitHub deploy'
+              || github.event.issue.title == '[nckh] Verify signed deploy')))
     runs-on: ubuntu-latest
     timeout-minutes: 35
     env:
@@ -75,10 +76,10 @@ jobs:
           python3 -m py_compile actions-hub/scripts/nckh-remote-unzip.py
           python3 actions-hub/scripts/nckh-remote-unzip.py verify
       - name: Exit after verification only
-        if: ${{ github.event_name == 'workflow_dispatch' && inputs.verify_only }}
+        if: ${{ (github.event_name == 'workflow_dispatch' && inputs.verify_only) || (github.event_name == 'issues' && github.event.issue.title == '[nckh] Verify signed deploy') }}
         run: echo "NCKH signed deploy endpoint verified; no build or upload."
       - name: Checkout NCKH Astro production source
-        if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.verify_only) }}
+        if: ${{ !((github.event_name == 'workflow_dispatch' && inputs.verify_only) || (github.event_name == 'issues' && github.event.issue.title == '[nckh] Verify signed deploy')) }}
         uses: actions/checkout@v4
         with:
           repository: ngocnhanvo/nghiencuukhoahoc-astro
@@ -87,12 +88,12 @@ jobs:
           path: source
           persist-credentials: false
       - name: Setup Node.js and pnpm
-        if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.verify_only) }}
+        if: ${{ !((github.event_name == 'workflow_dispatch' && inputs.verify_only) || (github.event_name == 'issues' && github.event.issue.title == '[nckh] Verify signed deploy')) }}
         uses: actions/setup-node@v4
         with:
           node-version: '24'
       - name: Install and build NCKH homepage from WordPress
-        if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.verify_only) }}
+        if: ${{ !((github.event_name == 'workflow_dispatch' && inputs.verify_only) || (github.event_name == 'issues' && github.event.issue.title == '[nckh] Verify signed deploy')) }}
         shell: bash
         working-directory: source
         run: |
@@ -114,7 +115,7 @@ jobs:
           ! grep -qi 'xuongmunonbaohiem' dist/client/index.html
           echo "NCKH Astro master $(git rev-parse HEAD)" >> "$GITHUB_STEP_SUMMARY"
       - name: Package tested Astro output
-        if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.verify_only) }}
+        if: ${{ !((github.event_name == 'workflow_dispatch' && inputs.verify_only) || (github.event_name == 'issues' && github.event.issue.title == '[nckh] Verify signed deploy')) }}
         working-directory: source
         shell: bash
         run: |
@@ -128,7 +129,7 @@ jobs:
           unzip -Z1 upload/nckh-astro.zip | grep -Fxq server/entry.mjs
           unzip -Z1 upload/nckh-astro.zip | grep -Fxq client/index.html
       - name: Preserve recoverable build archive
-        if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.verify_only) }}
+        if: ${{ !((github.event_name == 'workflow_dispatch' && inputs.verify_only) || (github.event_name == 'issues' && github.event.issue.title == '[nckh] Verify signed deploy')) }}
         uses: actions/upload-artifact@v4
         with:
           name: nckh-astro-tested-zip
@@ -137,7 +138,7 @@ jobs:
           retention-days: 1
           compression-level: 0
       - name: Install lftp for encrypted archive upload
-        if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.verify_only) }}
+        if: ${{ !((github.event_name == 'workflow_dispatch' && inputs.verify_only) || (github.event_name == 'issues' && github.event.issue.title == '[nckh] Verify signed deploy')) }}
         shell: bash
         run: |
           set -euo pipefail
@@ -146,19 +147,19 @@ jobs:
             sudo apt-get install -y -qq --no-install-recommends lftp
           fi
       - name: Upload NCKH archive to the exact approved FTP directory
-        if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.verify_only) }}
+        if: ${{ !((github.event_name == 'workflow_dispatch' && inputs.verify_only) || (github.event_name == 'issues' && github.event.issue.title == '[nckh] Verify signed deploy')) }}
         shell: bash
         run: |
           set -euo pipefail
           bash actions-hub/scripts/nckh-resumable-ftp.sh
       - name: Signed remote unpack with rollback protection
-        if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.verify_only) }}
+        if: ${{ !((github.event_name == 'workflow_dispatch' && inputs.verify_only) || (github.event_name == 'issues' && github.event.issue.title == '[nckh] Verify signed deploy')) }}
         shell: bash
         run: |
           set -euo pipefail
           python3 actions-hub/scripts/nckh-remote-unzip.py unpack
       - name: Record deployment details
-        if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.verify_only) }}
+        if: ${{ !((github.event_name == 'workflow_dispatch' && inputs.verify_only) || (github.event_name == 'issues' && github.event.issue.title == '[nckh] Verify signed deploy')) }}
         shell: bash
         run: |
           echo "NCKH source: ngocnhanvo/nghiencuukhoahoc-astro@master" >> "$GITHUB_STEP_SUMMARY"
