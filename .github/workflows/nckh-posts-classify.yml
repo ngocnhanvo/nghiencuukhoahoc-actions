@@ -1,0 +1,57 @@
+name: Classify published NCKH posts read-only
+on:
+  issues:
+    types: [opened]
+permissions:
+  contents: read
+  issues: write
+jobs:
+  classify:
+    if: github.repository == 'ngocnhanvo/nghiencuukhoahoc-actions' && github.event.issue.user.login == 'ngocnhanvo' && github.event.issue.title == '[nckh] Classify remaining posts'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Read public metadata and count safe legacy candidates (no WordPress writes)
+        shell: bash
+        run: |
+          set -euo pipefail
+          report="${RUNNER_TEMP}/classified.md"
+          printf '## NCKH published posts classification\n\n' > "$report"
+          python3 - "$report" <<'PY'
+          import sys,urllib.request,urllib.parse,json,re,html,time
+          report=sys.argv[1]
+          base='https://api-nghiencuukhoahoc.webnvn.com/wp-json/wp/v2/posts'
+          legacy=re.compile(r'xuongmunonbaohiem|blue.?sea|non[- ]bao[- ]hiem|mu[- ]bao[- ]hiem|mũ bảo hiểm|nón bảo hiểm|đặt làm mũ|in logo mũ',re.I)
+          total=0;matched=0;unknown=0;bad=[];sample=[];page=1
+          while page<=40:
+            query=urllib.parse.urlencode({'per_page':100,'page':page,'_fields':'id,slug,title,excerpt,date,status'})
+            try:
+              with urllib.request.urlopen(base+'?'+query,timeout=20) as res:
+                if page==1:total=int(res.headers.get('X-WP-Total','0'))
+                entries=json.load(res)
+            except urllib.error.HTTPError as e:
+              if e.code==400:break
+              raise
+            if not entries:break
+            for entry in entries:
+              txt=' '.join([str(entry.get('slug','')),str(entry.get('title',{}).get('rendered','')),
+                str(entry.get('excerpt',{}).get('rendered',''))])
+              txt=html.unescape(re.sub(r'<[^>]*>',' ',txt))
+              if legacy.search(txt):matched+=1
+              else:
+                unknown+=1
+                if len(sample)<18:sample.append((entry.get('id'),entry.get('slug')))
+            if len(entries)<100:break
+            page+=1
+          with open(report,'a',encoding='utf8') as f:
+            f.write('- WP REST header published total: **'+str(total)+'**.\n')
+            f.write('- Published posts classified from metadata: **'+str(matched+unknown)+'**.\n')
+            f.write('- Clearly legacy by title, slug or excerpt: **'+str(matched)+'**.\n')
+            f.write('- Require review (no clear legacy marker): **'+str(unknown)+'**.\n')
+            f.write('\nSample unclassified ID / slug (not deleted):\n')
+            for id,slug in sample:f.write('- '+str(id)+' / `'+str(slug)+'`\n')
+            f.write('\nRead-only inspection. No WordPress posts, media, or menu data changed.\n')
+          PY
+          gh api -X POST "repos/${GITHUB_REPOSITORY}/issues/${{ github.event.issue.number }}/comments" -F body=@"$report" >/dev/null
