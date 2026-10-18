@@ -1,0 +1,104 @@
+name: NCKH WordPress HTTPS wp-config update
+on:
+  issues:
+    types: [opened]
+permissions:
+  contents: read
+  issues: write
+jobs:
+  update:
+    if: github.repository == 'ngocnhanvo/nghiencuukhoahoc-actions' && github.event.issue.user.login == 'ngocnhanvo' && github.event.issue.title == '[nckh] Apply wp-config HTTPS'
+    runs-on: ubuntu-latest
+    timeout-minutes: 7
+    env:
+      FTP_SERVER: ${{ secrets.FTP_SERVER }}
+      FTP_USERNAME: ${{ secrets.FTP_USERNAME }}
+      FTP_PASSWORD: ${{ secrets.FTP_PASSWORD }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Securely replace only the two WordPress URL constants and verify
+        shell: bash
+        run: |
+          set -euo pipefail
+          set +x
+          report="${RUNNER_TEMP}/report.md"
+          printf '## NCKH wp-config HTTPS change\n\n' > "$report"
+          python3 - "$report" <<'PY'
+          import sys,os,re,io,ftplib,ssl,tempfile,subprocess,urllib.request,hashlib,time
+          from urllib.parse import urlparse
+          report=sys.argv[1]
+          def say(message):
+            with open(report,'a',encoding='utf8') as out:out.write('- '+message+'\n')
+          base="https://api-nghiencuukhoahoc.webnvn.com"
+          directory="/domains/api-nghiencuukhoahoc.webnvn.com"
+          parsed=urlparse(os.environ["FTP_SERVER"] if "://" in os.environ["FTP_SERVER"] else "ftps://"+os.environ["FTP_SERVER"])
+          ftp=ftplib.FTP_TLS()
+          ftp.connect(parsed.hostname,parsed.port or 21,timeout=15)
+          ftp.login(os.environ["FTP_USERNAME"],os.environ["FTP_PASSWORD"])
+          ftp.prot_p()
+          ftp.cwd(directory)
+          old=io.BytesIO()
+          ftp.retrbinary("RETR public_html/wp-config.php",old.write)
+          raw=old.getvalue()
+          assert len(raw)>500 and len(raw)<500000,"Unexpected config file size"
+          data=raw.decode('utf-8')
+          assert "nghiencuukhoahoc_181026" in data,"Database identity mismatch: refusing FTP modification"
+          assert "xuongmunonbaohiem" not in data,"Found legacy domain in wp-config; requires manual review before writing"
+          expr=r"(?m)^([ \t]*define\s*\(\s*['\"]{key}['\"]\s*,\s*)(.+?)(\s*\)\s*;[^\S\r\n]*)$"
+          updated=data
+          for key in ("WP_HOME","WP_SITEURL"):
+            pattern=expr.format(key=key)
+            updated,n=re.subn(pattern,lambda m:m.group(1)+"'"+base+"'"+m.group(3),updated)
+            assert n==1,"Expected exactly one "+key+" constant"
+          if data==updated:
+            say("Both URL constants already point to HTTPS; no FTP update.")
+            ftp.quit();sys.exit(0)
+          with tempfile.NamedTemporaryFile(suffix=".php",delete=True) as tmp:
+            tmp.write(updated.encode("utf8"));tmp.flush()
+            valid=subprocess.run(["php","-l",tmp.name],capture_output=True,text=True)
+            assert valid.returncode==0,"PHP syntax check failed, FTP untouched"
+          now=str(int(time.time()))
+          safe="nckh-wp-config-backups"
+          try:ftp.mkd(safe)
+          except ftplib.error_perm as e:
+            if not str(e).startswith("550"):raise
+          backup=safe+"/wp-config-prehttps-"+now+".php.txt"
+          staging=safe+"/wp-config-staged-"+now+".php.txt"
+          ftp.storbinary("STOR "+backup,io.BytesIO(raw))
+          ftp.storbinary("STOR "+staging,io.BytesIO(updated.encode("utf8")))
+          check=io.BytesIO()
+          ftp.retrbinary("RETR "+staging,check.write)
+          assert hashlib.sha256(check.getvalue()).digest()==hashlib.sha256(updated.encode("utf8")).digest(),"Staging hash mismatch"
+          say("Private backup saved outside public_html: "+backup+".")
+          moved=False
+          try:
+            # A backup already exists, so a brief rename avoids partial config file writes.
+            ftp.rename("public_html/wp-config.php",safe+"/wp-config-original-"+now+".php.txt")
+            moved=True
+            ftp.rename(staging,"public_html/wp-config.php")
+            restored=io.BytesIO()
+            ftp.retrbinary("RETR public_html/wp-config.php",restored.write)
+            assert hashlib.sha256(restored.getvalue()).digest()==hashlib.sha256(updated.encode("utf8")).digest(),"Uploaded config checksum mismatch"
+            req=urllib.request.Request(base+"/wp-json/")
+            with urllib.request.urlopen(req,timeout=17) as resp:
+              import json
+              observed=json.load(resp).get("url")
+            assert observed==base,"WP REST still not HTTPS after config change"
+            with urllib.request.urlopen(base+"/wp-login.php",timeout=17) as resp:
+              assert resp.status==200,"HTTPS login page not accessible"
+            say("Successfully updated WP_HOME and WP_SITEURL to HTTPS.")
+            say("WordPress REST and wp-login.php verified after change.")
+          except Exception as err:
+            say("Validation failed; attempting automatic rollback. Exception class: "+type(err).__name__)
+            if moved:
+              try:
+                ftp.delete("public_html/wp-config.php")
+              except ftplib.all_errors:pass
+              ftp.rename(safe+"/wp-config-original-"+now+".php.txt","public_html/wp-config.php")
+              say("Original wp-config.php restored from private backup.")
+            raise
+          finally:
+            try:ftp.quit()
+            except ftplib.all_errors:pass
+          PY
+          gh api -X POST "repos/${GITHUB_REPOSITORY}/issues/${{ github.event.issue.number }}/comments" -F body=@"$report" >/dev/null
