@@ -1,0 +1,23 @@
+name: NCKH deploy status audit
+on:
+  issues:
+    types: [opened]
+permissions:
+  contents: read
+  actions: read
+  issues: write
+jobs:
+  show:
+    if: github.event.issue.title == '[nckh] Inspect deploy status' && github.event.issue.user.login == 'ngocnhanvo'
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - shell: bash
+        run: |
+          set -euo pipefail
+          report="${RUNNER_TEMP}/report.md"
+          echo '## NCKH deployment workflow run states' > "$report"
+          echo '' >> "$report"
+          gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/nckh-deploy.yml/runs?per_page=10" --jq '.workflow_runs[] | "- "+(.id|tostring)+" "+.event+" "+.status+" / "+(.conclusion//"pending")+" "+.html_url' >> "$report"
+          gh api -X POST "repos/${GITHUB_REPOSITORY}/issues/${{ github.event.issue.number }}/comments" -F body=@"$report" >/dev/null
