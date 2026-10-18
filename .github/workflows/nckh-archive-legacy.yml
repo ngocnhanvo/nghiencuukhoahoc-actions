@@ -9,7 +9,7 @@ jobs:
   archive:
     if: github.repository == 'ngocnhanvo/nghiencuukhoahoc-actions' && github.event.issue.user.login == 'ngocnhanvo' && github.event.issue.title == '[nckh] Draft legacy content'
     runs-on: ubuntu-latest
-    timeout-minutes: 9
+    timeout-minutes: 14
     env:
       WP_USER: ${{ secrets.WP_ADMIN_USERNAME }}
       WP_PASS: ${{ secrets.WP_ADMIN_PASSWORD }}
@@ -101,10 +101,10 @@ jobs:
               if legacy.search(text):targets.append(post['id'])
             if len(batch)<25:break
             page+=1
-          for post_id in targets[:15]:
+          for post_id in targets[:60]:
             update('posts',post_id)
             archived+=1
           log('Published posts reviewed: **'+str(examined)+'**. Set to draft: **'+str(archived)+'**.')
-          log('Matching posts in current sample: **'+str(len(targets))+'**; capped to 15 updates per run.')
+          log('Matching posts in current sample: **'+str(len(targets))+'**; capped to 60 updates per run.')
           log('No permanent deletion; uploads/ESC Table/WooCommerce products untouched.')
           PY
