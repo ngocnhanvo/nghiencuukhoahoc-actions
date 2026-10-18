@@ -87,11 +87,9 @@ jobs:
             for attempt in range(3):
               try:
                 result,_=request(url,method='DELETE',headers=auth)
-                if isinstance(result,dict) and isinstance(result.get('deleted'),bool):
-                  return True,item['id']
-                return False,item['id']
+                return True,item['id']
               except urllib.error.HTTPError as e:
-                if e.code==404:return True,item['id']
+                if e.code==404:return False,item['id']
                 if attempt==2 or e.code not in (429,500,502,503,504):return False,item['id']
               except Exception:
                 if attempt==2:return False,item['id']
@@ -104,14 +102,16 @@ jobs:
               batch,state_before=list_first(state)
               if batch:break
             if not batch:break
+            trash_before=list_first('trash')[1]
             with concurrent.futures.ThreadPoolExecutor(max_workers=3) as pool:
               answers=list(pool.map(move_one,batch[:30]))
             successes=sum(1 for good,pid in answers if good)
             moved+=successes
             failures.extend(pid for good,pid in answers if not good)
             state_after=list_first(state)[1]
-            if state_before-state_after<successes:
-              out('Count check failed for '+state+'; stopping. Before: '+str(state_before)+', after: '+str(state_after))
+            trash_after=list_first('trash')[1]
+            if state_before-state_after<successes or trash_after-trash_before<successes:
+              out('Status check failed for '+state+'; stopping. Before: '+str(state_before)+', after: '+str(state_after)+', Trash change: '+str(trash_after-trash_before))
               break
             if failures or successes==0:
               out('Stopped because a batch could not be fully moved; failed IDs count: '+str(len(failures)))
