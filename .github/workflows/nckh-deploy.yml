@@ -106,6 +106,7 @@ jobs:
           node --check dist/server/entry.mjs
           test -s dist/client/index.html
           grep -q 'data-nckh-home="2026"' dist/client/index.html
+          grep -Eq 'rel="canonical"[^>]*href="https://nghiencuukhoahoc[.]id[.]vn/"' dist/client/index.html
           ! grep -qi 'xuongmunonbaohiem' dist/client/index.html
           echo "NCKH Astro master $(git rev-parse HEAD)" >> "$GITHUB_STEP_SUMMARY"
       - name: Package tested Astro output
