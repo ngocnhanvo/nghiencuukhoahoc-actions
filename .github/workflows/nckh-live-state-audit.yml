@@ -1,0 +1,81 @@
+name: NCKH live source and frontend audit
+on:
+  issues:
+    types: [opened]
+permissions:
+  contents: read
+  issues: write
+jobs:
+  check:
+    if: github.repository == 'ngocnhanvo/nghiencuukhoahoc-actions' && github.event.issue.user.login == 'ngocnhanvo' && github.event.issue.title == '[nckh] Audit current live Astro and Trigger'
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    env:
+      GH_TOKEN: ${{ github.token }}
+      SOURCE_PAT: ${{ secrets.SOURCE_REPO_PAT }}
+      FTP_SERVER: ${{ secrets.FTP_SERVER }}
+      FTP_USERNAME: ${{ secrets.FTP_USERNAME }}
+      FTP_PASSWORD: ${{ secrets.FTP_PASSWORD }}
+    steps:
+      - name: Audit target FTP state and GitHub Trigger code (read-only)
+        shell: bash
+        run: |
+          set -euo pipefail
+          set +x
+          report="${RUNNER_TEMP}/audit.md"
+          python3 - "$report" <<'PY'
+          import os,io,ftplib,hashlib,sys,re,urllib.request,urllib.error,ssl
+          from urllib.parse import urlparse
+          report=sys.argv[1]
+          def add(s):
+              with open(report,'a',encoding='utf8') as w:w.write(s+'\n')
+          add('## NCKH live deploy/Trigger diagnostic (read-only)\n')
+          pat=os.environ['SOURCE_PAT']
+          u='https://api.github.com/repos/ngocnhanvo/nghiencuukhoahoc-php/contents/wp-content/plugins/github-trigger/vcs-build-trigger.php?ref=master'
+          req=urllib.request.Request(u,headers={'Authorization':'Bearer '+pat,'Accept':'application/vnd.github.raw+json'})
+          with urllib.request.urlopen(req,timeout=30) as resp: source=resp.read()
+          src=hashlib.sha256(source).hexdigest()
+          p=os.environ['FTP_SERVER']
+          parsed=urlparse(p if '://' in p else 'ftps://'+p)
+          ftp=ftplib.FTP_TLS()
+          ftp.connect(parsed.hostname,parsed.port or 21,timeout=20)
+          ftp.login(os.environ['FTP_USERNAME'],os.environ['FTP_PASSWORD'])
+          ftp.prot_p()
+          wp='/domains/api-nghiencuukhoahoc.webnvn.com/public_html/'
+          frontend='/domains/nghiencuukhoahoc.webnvn.com/public_html/'
+          def read(path):
+              b=io.BytesIO()
+              try:ftp.retrbinary('RETR '+path,b.write)
+              except ftplib.error_perm as e:
+                  if str(e).startswith('550'):return None
+                  raise
+              return b.getvalue()
+          config=read(wp+'wp-config.php')
+          assert config is not None and b'nghiencuukhoahoc_181026' in config,'Wrong NCKH WordPress host'
+          conf=config.decode('utf8','replace')
+          live=read(wp+'wp-content/plugins/github-trigger/vcs-build-trigger.php')
+          add('- WordPress Trigger PHP matches repository master: **'+str(live is not None and hashlib.sha256(live).hexdigest()==src)+'**.')
+          for name,expected in [('VCS_GH_OWNER','ngocnhanvo'),('VCS_GH_REPO','nghiencuukhoahoc-actions')]:
+              matches=re.findall(r'define\s*\(\s*[\'\"]'+name+r'[\'\"]\s*,\s*[\'\"]([^\'\"]*)',conf)
+              add('- wp-config '+name+': '+('no override' if not matches else ('expected value' if matches[-1]==expected else 'DIFFERENT value'))+'.')
+          add('- WordPress HMAC deploy token defined in wp-config: **'+str('VCS_GH_ACTIONS_TOKEN' in conf)+'**.')
+          add('- Trigger branch guard checks NCKH database/URL: **'+str(live is not None and b'DB_NAME' in live and b'api-nghiencuukhoahoc.webnvn.com' in live)+'**.')
+          files=['index.html','client/index.html','server/entry.mjs','.htaccess','client/_astro/']
+          for x in files[:4]:
+              data=read(frontend+x)
+              add('- FTP root '+x+': '+('absent' if data is None else 'present, bytes='+str(len(data))+(' EduResearch='+str(b'data-nckh-home="2026"' in data) if x.endswith('.html') else '')))
+              if x=='.htaccess' and data:
+                  content=data.decode('utf8','replace')
+                  add('  - rewrite to Node/handler: '+str(bool(re.search('proxy|RewriteRule|node|Passenger',content,re.I))))
+                  add('  - names client/: '+str('client/' in content))
+          ftp.quit()
+          for url in ['http://nghiencuukhoahoc.webnvn.com/','https://nghiencuukhoahoc.webnvn.com/','https://nghiencuukhoahoc.id.vn/']:
+              try:
+                  with urllib.request.urlopen(urllib.request.Request(url,headers={'User-Agent':'NCKH-Deployment-ReadOnly/1'}),timeout=18) as r:
+                      body=r.read(400000)
+                      add('- HTTP '+url+': '+str(r.status)+', marker='+str(b'data-nckh-home="2026"' in body)+', final host='+str(urlparse(r.url).hostname))
+              except Exception as e:
+                  add('- HTTP '+url+': unavailable ('+type(e).__name__+')')
+          add('\nNo file or WordPress data was changed.')
+          PY
+          gh api -X POST "repos/${GITHUB_REPOSITORY}/issues/${{ github.event.issue.number }}/comments" -F body=@"$report" >/dev/null
