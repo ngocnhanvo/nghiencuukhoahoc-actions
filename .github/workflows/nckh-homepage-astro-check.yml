@@ -32,7 +32,7 @@ jobs:
           cd source
           printf 'Astro branch: `github`, commit `%s`.\n' "$(git rev-parse HEAD)" >> "$report"
           mkdir -p "${RUNNER_TEMP}/parser"
-          if ! npm --prefix "${RUNNER_TEMP}/parser" install --no-save --ignore-scripts @astrojs/compiler@2.12.4 > "${RUNNER_TEMP}/parser-install.log" 2>&1; then
+          if ! npm --prefix "${RUNNER_TEMP}/parser" install --no-save --ignore-scripts @astrojs/compiler@latest > "${RUNNER_TEMP}/parser-install.log" 2>&1; then
             echo 'Standalone Astro parser installation failed:' >> "$report"
             tail -n 15 "${RUNNER_TEMP}/parser-install.log" >> "$report"
             exit 1
