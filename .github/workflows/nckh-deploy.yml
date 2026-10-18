@@ -1,0 +1,168 @@
+name: Deploy EduResearch Hub Astro via GitHub Trigger
+on:
+  repository_dispatch:
+    types: [wp_trigger_build]
+  workflow_dispatch:
+    inputs:
+      verify_only:
+        description: 'Only check WordPress HMAC deploy readiness; do not build or upload'
+        type: boolean
+        default: false
+  issues:
+    types: [opened]
+permissions:
+  contents: read
+  issues: write
+concurrency:
+  group: nckh-astro-production-deploy
+  cancel-in-progress: false
+jobs:
+  astro:
+    if: >-
+      github.repository == 'ngocnhanvo/nghiencuukhoahoc-actions'
+      && (github.event_name == 'workflow_dispatch'
+        || (github.event_name == 'repository_dispatch'
+          && (github.event.client_payload.site_domain == 'nghiencuukhoahoc.id.vn'
+              || github.event.client_payload.site_domain == 'nghiencuukhoahoc.webnvn.com'))
+        || (github.event_name == 'issues'
+          && github.event.issue.user.login == 'ngocnhanvo'
+          && github.event.issue.title == '[nckh] First GitHub deploy'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    env:
+      ENV_FILE: ${{ secrets.ENV_FILE }}
+      SOURCE_REPO_PAT: ${{ secrets.SOURCE_REPO_PAT }}
+      FTP_SERVER: ${{ secrets.FTP_SERVER }}
+      FTP_USERNAME: ${{ secrets.FTP_USERNAME }}
+      FTP_PASSWORD: ${{ secrets.FTP_PASSWORD }}
+      FTP_ASTRO_DIR: /domains/nghiencuukhoahoc.webnvn.com/public_html/
+      ASTRO_FTP_TARGET: /domains/nghiencuukhoahoc.webnvn.com/public_html/
+      ZIP_PATH: source/upload/nckh-astro.zip
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Get isolated NCKH deployment helpers
+        uses: actions/checkout@v4
+        with:
+          path: actions-hub
+      - name: Verify env and website identity without exposing secrets
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$ENV_FILE"
+          test -n "$SOURCE_REPO_PAT"
+          test -n "$FTP_SERVER"
+          test -n "$FTP_USERNAME"
+          test -n "$FTP_PASSWORD"
+          python3 - <<'PY'
+          import os,re
+          from urllib.parse import urlsplit
+          env=os.environ['ENV_FILE']
+          vals={}
+          for line in env.splitlines():
+            m=re.match(r'^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)\s*$',line)
+            if not m:continue
+            k,v=m.groups(); v=v.strip().strip('"\'')
+            vals[k]=v
+          assert vals.get('WC_URL','').rstrip('/')=='https://api-nghiencuukhoahoc.webnvn.com', 'Wrong WP source'
+          assert vals.get('WC_URL_CLIENT','').rstrip('/') in ('https://nghiencuukhoahoc.id.vn','https://nghiencuukhoahoc.webnvn.com'), 'Wrong client'
+          assert not re.search(r'xuongmunonbaohiem|tuannguyen\.io\.vn', env, re.I),'Legacy domain in ENV_FILE'
+          print('Verified isolated NCKH source and frontend domain.')
+          PY
+      - name: Check signed PHP deploy readiness before build or FTP upload
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m py_compile actions-hub/scripts/nckh-remote-unzip.py
+          python3 actions-hub/scripts/nckh-remote-unzip.py verify
+      - name: Exit after verification only
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.verify_only }}
+        run: echo "NCKH signed deploy endpoint verified; no build or upload."
+      - name: Checkout NCKH Astro production source
+        if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.verify_only) }}
+        uses: actions/checkout@v4
+        with:
+          repository: ngocnhanvo/nghiencuukhoahoc-astro
+          ref: master
+          token: ${{ secrets.SOURCE_REPO_PAT }}
+          path: source
+          persist-credentials: false
+      - name: Setup Node.js and pnpm
+        if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.verify_only) }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Install and build NCKH homepage from WordPress
+        if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.verify_only) }}
+        shell: bash
+        working-directory: source
+        run: |
+          set -euo pipefail
+          corepack enable
+          corepack prepare pnpm@9 --activate
+          pnpm install --frozen-lockfile
+          printf '%s\n' "$ENV_FILE" > .env
+          printf '\nNCKH_HOMEPAGE_ONLY_BUILD=true\ncacheAll=false\ncachePage=false\ncacheProduct=false\ncacheTablePress=false\ncacheRedirect=false\ncacheMenu=false\ncacheProductCategory=false\n' >> .env
+          export NCKH_HOMEPAGE_ONLY_BUILD=true
+          export cacheAll=false cachePage=false cacheProduct=false cacheTablePress=false
+          export cacheRedirect=false cacheMenu=false cacheProductCategory=false
+          export NODE_ENV=production
+          export WC_URL=https://api-nghiencuukhoahoc.webnvn.com
+          pnpm run build-git
+          node --check dist/server/entry.mjs
+          test -s dist/client/index.html
+          grep -q 'data-nckh-home="2026"' dist/client/index.html
+          ! grep -qi 'xuongmunonbaohiem' dist/client/index.html
+          echo "NCKH Astro master $(git rev-parse HEAD)" >> "$GITHUB_STEP_SUMMARY"
+      - name: Package tested Astro output
+        if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.verify_only) }}
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p deploy upload
+          cp .env deploy/.env
+          cp -a dist/. deploy/
+          cd deploy
+          zip -qr ../upload/nckh-astro.zip .
+          cd ..
+          unzip -Z1 upload/nckh-astro.zip | grep -Fxq server/entry.mjs
+          unzip -Z1 upload/nckh-astro.zip | grep -Fxq client/index.html
+      - name: Preserve recoverable build archive
+        if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.verify_only) }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: nckh-astro-tested-zip
+          path: source/upload/nckh-astro.zip
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 0
+      - name: Install lftp for encrypted archive upload
+        if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.verify_only) }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! command -v lftp >/dev/null 2>&1; then
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq --no-install-recommends lftp
+          fi
+      - name: Upload NCKH archive to the exact approved FTP directory
+        if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.verify_only) }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash actions-hub/scripts/nckh-resumable-ftp.sh
+      - name: Signed remote unpack with rollback protection
+        if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.verify_only) }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 actions-hub/scripts/nckh-remote-unzip.py unpack
+      - name: Record deployment details
+        if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.verify_only) }}
+        shell: bash
+        run: |
+          echo "NCKH source: ngocnhanvo/nghiencuukhoahoc-astro@master" >> "$GITHUB_STEP_SUMMARY"
+          echo "Approved FTP target: /domains/nghiencuukhoahoc.webnvn.com/public_html/" >> "$GITHUB_STEP_SUMMARY"
+          if [ "${{ github.event_name }}" = issues ]; then
+            gh api -X POST "repos/${GITHUB_REPOSITORY}/issues/${{ github.event.issue.number }}/comments" -f body="NCKH GitHub Actions build + signed FTP deploy completed successfully. Source branch: Astro master; target: /domains/nghiencuukhoahoc.webnvn.com/public_html/. GitHub run: https://github.com/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" >/dev/null
+          fi
