@@ -1,0 +1,34 @@
+name: NCKH PHP staging-safe offline tests
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/nckh-php-offline-check.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  php:
+    if: github.repository == 'ngocnhanvo/nghiencuukhoahoc-actions'
+    runs-on: ubuntu-latest
+    timeout-minutes: 7
+    env:
+      SOURCE_PAT: ${{ secrets.SOURCE_REPO_PAT }}
+    steps:
+      - name: Checkout isolated NCKH PHP source without deployment
+        uses: actions/checkout@v4
+        with:
+          repository: ngocnhanvo/nghiencuukhoahoc-php
+          ref: master
+          path: source
+          token: ${{ secrets.SOURCE_REPO_PAT }}
+          persist-credentials: false
+      - name: Check PHP syntax and offline permission/data regressions
+        shell: bash
+        run: |
+          set -euo pipefail
+          php -v | head -2
+          php -l source/wp-content/mu-plugins/nckh-research-api.php
+          php -l source/tests/nckh-research-api.test.php
+          php source/tests/nckh-research-api.test.php
+          echo "Offline-only test pass. No FTP, WP, SSH, database or staging writes."
