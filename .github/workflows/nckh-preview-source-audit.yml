@@ -1,0 +1,33 @@
+name: NCKH Preview Source Compatibility Audit
+on:
+  issues:
+    types: [opened]
+permissions:
+  contents: read
+  issues: write
+jobs:
+  inspect:
+    if: github.repository == 'ngocnhanvo/nghiencuukhoahoc-actions' && github.event.issue.user.login == 'ngocnhanvo' && github.event.issue.title == '[nckh] Preview endpoint preflight'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      GH_TOKEN: ${{ github.token }}
+      SOURCE_PAT: ${{ secrets.SOURCE_REPO_PAT }}
+    steps:
+      - name: Read source structure and REST route status (no writes)
+        shell: bash
+        run: |
+          set -euo pipefail
+          report="${RUNNER_TEMP}/report.md"
+          printf '## ESC to NCKH preview compatibility\n\n' > "$report"
+          for project in escvn-php nghiencuukhoahoc-php; do
+            json="${RUNNER_TEMP}/${project}.json"
+            curl -fLsS --max-time 30 -H "Authorization: Bearer ${SOURCE_PAT}" -H 'Accept: application/vnd.github+json' "https://api.github.com/repos/ngocnhanvo/${project}/git/trees/master?recursive=1" -o "$json"
+            echo "### ${project} interesting source files" >> "$report"
+            jq -r '.tree[]? | select(.type=="blob") | .path | select(test("preview|tablepress|editor";"i"))' "$json" | head -n 100 | sed 's/^/- `/; s/$/`/' >> "$report"
+            echo '' >> "$report"
+          done
+          echo '### Live NCKH REST route inventory' >> "$report"
+          curl -fsS --max-time 30 'https://api-nghiencuukhoahoc.webnvn.com/wp-json/' |
+            jq -r '.routes|keys[] | select(test("tablepress|preview";"i"))' | head -n 40 | sed 's/^/- `/; s/$/`/' >> "$report" || true
+          gh api -X POST "repos/${GITHUB_REPOSITORY}/issues/${{ github.event.issue.number }}/comments" -F body=@"$report" >/dev/null
