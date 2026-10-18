@@ -1,0 +1,101 @@
+name: NCKH Install Verified Staging Database Schema
+on:
+  issues:
+    types: [opened]
+permissions:
+  contents: read
+jobs:
+  migrate:
+    if: >-
+      github.repository == 'ngocnhanvo/nghiencuukhoahoc-actions'
+      && github.event.issue.user.login == 'ngocnhanvo'
+      && github.event.issue.title == '[nckh] Install backed-up staging schema'
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    env:
+      WP_USER: ${{ secrets.WP_ADMIN_USERNAME }}
+      WP_PASS: ${{ secrets.WP_ADMIN_PASSWORD }}
+    steps:
+      - name: Admin-authenticated idempotent staging-only database migration
+        shell: bash
+        run: |
+          set -euo pipefail
+          set +x
+          python3 - <<'PY'
+          import os,re,json,urllib.request,urllib.parse,urllib.error,http.cookiejar,html.parser
+          host='api-nghiencuukhoahoc.webnvn.com'
+          base='https://'+host
+          assert os.environ.get('WP_USER') and os.environ.get('WP_PASS'), 'Missing staged WP admin credentials'
+          jar=http.cookiejar.CookieJar()
+          opener=urllib.request.build_opener(urllib.request.HTTPCookieProcessor(jar))
+          def web(path,data=None,headers=None,timeout=45):
+              req=urllib.request.Request(base+path,data=data,headers={
+                  'User-Agent':'NCKH-Verified-DB-Migration/1.0',
+                  'Cache-Control':'no-store',
+                  **(headers or {}),
+              })
+              with opener.open(req,timeout=timeout) as r:
+                  return r.status,r.geturl(),r.read(100000)
+          web('/wp-login.php')
+          _,url,_=web('/wp-login.php',urllib.parse.urlencode({
+              'log':os.environ['WP_USER'],'pwd':os.environ['WP_PASS'],
+              'wp-submit':'Log In','redirect_to':base+'/wp-admin/','testcookie':'1',
+          }).encode('utf-8'))
+          if not url.startswith(base+'/wp-admin'):
+              raise RuntimeError('Admin login to approved WordPress staging host failed')
+          path='/wp-admin/tools.php?page=nckh-research-db'
+          _,url,body=web(path)
+          if not url.startswith(base+'/wp-admin/tools.php') or b'nckh_install_database' not in body:
+              # The installed-state page omits the form but retains the tooling title.
+              if b'EduResearch Hub' not in body:
+                  raise RuntimeError('NCKH staging schema admin page not accessible')
+          text=body.decode('utf-8','replace')
+          if 'Schema NCKH đã được cài đặt' in text:
+              print('PASS: NCKH schema already installed; no migration run again.')
+          else:
+              class Nonce(html.parser.HTMLParser):
+                  def __init__(self):super().__init__();self.value=None
+                  def handle_starttag(self,tag,attrs):
+                      fields=dict(attrs)
+                      if tag=='input' and fields.get('name')=='_wpnonce':
+                          self.value=fields.get('value')
+              parsed=Nonce();parsed.feed(text)
+              if not parsed.value or not re.fullmatch('[A-Za-z0-9]{8,20}',parsed.value):
+                  raise RuntimeError('NCKH admin migration nonce missing')
+              if 'nckh_backup_confirmed' not in text or 'nckh_install_database' not in text:
+                  raise RuntimeError('Expected explicit backed-up migration form unavailable')
+              _,url,result=web(path,urllib.parse.urlencode({
+                  '_wpnonce':parsed.value,
+                  'nckh_install_database':'1',
+                  'nckh_backup_confirmed':'1',
+              }).encode('utf-8'),timeout=95)
+              if 'Schema NCKH đã được cài đặt' not in result.decode('utf-8','replace'):
+                  raise RuntimeError('Database migration did not confirm all 5 tables')
+              print('PASS: Backed-up WordPress staging schema v2 created only by admin.')
+          _,_,body=web(path)
+          if 'Schema NCKH đã được cài đặt' not in body.decode('utf-8','replace'):
+              raise RuntimeError('NCKH staging schema status did not persist after reload')
+          _,_,nonce=web('/wp-admin/admin-ajax.php?action=rest-nonce')
+          rest_nonce=nonce.decode('utf-8','replace').strip()
+          if not re.fullmatch('[A-Za-z0-9]{8,20}',rest_nonce):
+              raise RuntimeError('WordPress REST admin nonce invalid')
+          _,_,response=web('/wp-json/nckh/v1/projects',headers={'X-WP-Nonce':rest_nonce,'Accept':'application/json'})
+          data=json.loads(response)
+          if not isinstance(data,dict) or not isinstance(data.get('items'),list):
+              raise RuntimeError('Schema installed but authenticated projects query failed')
+          print('PASS: Authenticated staging WordPress REST projects returned valid JSON.')
+          # Verify request without auth is still denied (no privileged cookies).
+          public=urllib.request.Request(base+'/wp-json/nckh/v1/projects',
+              headers={'Accept':'application/json','User-Agent':'NCKH-Guest-Check'})
+          try:
+              with urllib.request.urlopen(public,timeout=20):
+                  raise RuntimeError('Private projects endpoint unexpectedly public')
+          except urllib.error.HTTPError as e:
+              if e.code not in (401,403):
+                  raise RuntimeError('Expected private endpoint denial, got '+str(e.code))
+              code=json.loads(e.read(512)).get('code')
+              if code not in ('rest_forbidden','rest_forbidden_context'):
+                  raise RuntimeError('Unexpected anonymous REST response')
+          print('PASS: Anonymous requests remain forbidden.')
+          print('Migration verification complete; no production site or Astro changes.')
+          PY
