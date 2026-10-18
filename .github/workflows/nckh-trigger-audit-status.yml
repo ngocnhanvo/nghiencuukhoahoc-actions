@@ -21,4 +21,7 @@ jobs:
           printf '## Trigger readiness workflow status\n\n' > "$report"
           gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/nckh-check-wp-trigger.yml/runs?per_page=5" --jq \
             '.workflow_runs[] | "- Run "+(.id|tostring)+" / "+.status+" / "+(.conclusion//"pending")+" — "+.html_url' >> "$report"
+          printf '\n### Activation workflow\n' >> "$report"
+          gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/nckh-enable-wp-trigger.yml/runs?per_page=5" --jq \
+            '.workflow_runs[] | "- Run "+(.id|tostring)+" / "+.status+" / "+(.conclusion//"pending")+" — "+.html_url' >> "$report"
           gh api -X POST "repos/${GITHUB_REPOSITORY}/issues/${{ github.event.issue.number }}/comments" -F body=@"$report" >/dev/null
