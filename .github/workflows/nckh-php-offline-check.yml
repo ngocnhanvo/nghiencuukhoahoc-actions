@@ -31,4 +31,7 @@ jobs:
           php -l source/wp-content/mu-plugins/nckh-research-api.php
           php -l source/tests/nckh-research-api.test.php
           php source/tests/nckh-research-api.test.php
+          php -l source/wp-content/mu-plugins/nckh-google-auth.php
+          php -l source/tests/nckh-google-auth.test.php
+          php source/tests/nckh-google-auth.test.php
           echo "Offline-only test pass. No FTP, WP, SSH, database or staging writes."
