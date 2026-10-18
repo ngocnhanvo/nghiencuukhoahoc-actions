@@ -64,6 +64,9 @@ jobs:
             console.log('PASS: TypeScript syntax', file);
           }
           JS
+      - name: Check strict NCKH TypeScript only (legacy source excluded)
+        working-directory: source
+        run: pnpm exec tsc --project tsconfig.nckh.json --pretty false
       - name: Run focused NCKH API client tests
         working-directory: source
         run: pnpm exec vitest run src/lib/nckh/notebookClient.test.ts src/lib/nckh/googleOidc.test.ts src/lib/nckh/serverWp.test.ts src/lib/nckh/serverSession.test.ts src/lib/nckh/researchProgress.test.ts src/lib/nckh/notebookExport.test.ts
