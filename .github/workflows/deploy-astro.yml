@@ -1,0 +1,192 @@
+name: NCKH Astro - GitHub Trigger Build and Deploy
+
+on:
+  repository_dispatch:
+    types: [wp_trigger_build]
+  workflow_dispatch:
+    inputs:
+      deploy:
+        description: 'Deploy validated static homepage to NCKH FTPS after build'
+        type: boolean
+        required: true
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nckh-astro-production
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build EduResearch Hub from Astro master
+    if: ${{ github.event_name != 'repository_dispatch' || github.event.client_payload.site_domain == 'nghiencuukhoahoc.id.vn' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - name: Verify NCKH secrets
+        shell: bash
+        env:
+          SOURCE_REPO_PAT: ${{ secrets.SOURCE_REPO_PAT }}
+          ENV_FILE: ${{ secrets.ENV_FILE }}
+          FTP_SERVER: ${{ secrets.FTP_SERVER }}
+          FTP_USERNAME: ${{ secrets.FTP_USERNAME }}
+          FTP_PASSWORD: ${{ secrets.FTP_PASSWORD }}
+        run: |
+          set -euo pipefail
+          test -n "$SOURCE_REPO_PAT"
+          test -n "$ENV_FILE"
+          test -n "$FTP_SERVER"
+          test -n "$FTP_USERNAME"
+          test -n "$FTP_PASSWORD"
+
+      - name: Checkout only NCKH Astro production source
+        uses: actions/checkout@v4
+        with:
+          repository: ngocnhanvo/nghiencuukhoahoc-astro
+          ref: master
+          path: source
+          token: ${{ secrets.SOURCE_REPO_PAT }}
+          persist-credentials: false
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - name: Validate isolated NCKH environment
+        shell: bash
+        working-directory: source
+        env:
+          ENV_FILE: ${{ secrets.ENV_FILE }}
+        run: |
+          set -euo pipefail
+          set +x
+          python3 - <<'PY'
+          import os,re
+          from urllib.parse import urlparse
+          raw=os.environ['ENV_FILE']
+          lines={}
+          for line in raw.splitlines():
+            match=re.match(r'^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)\s*$',line)
+            if match:
+              key,value=match.groups()
+              lines[key]=value.strip().strip("'\"")
+          wp=lines.get('WC_URL','').rstrip('/')
+          frontend=lines.get('WC_URL_CLIENT','').rstrip('/')
+          assert wp=='https://api-nghiencuukhoahoc.webnvn.com','Wrong WordPress URL; build blocked'
+          assert frontend in ('https://nghiencuukhoahoc.id.vn','https://nghiencuukhoahoc.webnvn.com'),'Wrong frontend URL; build blocked'
+          for key,value in lines.items():
+            if key in ('WC_URL','WC_URL_CLIENT','NODE_ENV','WOO_KEY','WOO_SECRET','cacheAll','cachePage','cacheTablePress','cacheProduct','cacheProductCategory','cacheMenu','cacheRedirect'):
+              if '\n' in value or '\r' in value:raise ValueError('Invalid newline in config')
+              with open(os.environ['GITHUB_ENV'],'a',encoding='utf8') as f:f.write(key+'='+value+'\n')
+          with open('.env','w',encoding='utf8') as f:f.write(raw+'\n')
+          with open(os.environ['GITHUB_ENV'],'a',encoding='utf8') as f:
+            f.write('NCKH_HOMEPAGE_ONLY_BUILD=true\n')
+            f.write('NODE_ENV=production\n')
+            for name in ('cacheAll','cachePage','cacheProduct','cacheProductCategory','cacheTablePress','cacheRedirect','cacheMenu'):
+              f.write(name+'=false\n')
+          print('Environment verified for NCKH only (values hidden).')
+          PY
+
+      - name: Install and build Astro on GitHub runner
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          pnpm install --frozen-lockfile
+          pnpm run build-git
+
+      - name: Gate deployment on built HTML, compiled assets and canonical SEO
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s dist/client/index.html
+          test -s dist/client/sitemap.xml
+          test -s dist/client/robots.txt
+          test -s dist/client/llms.txt
+          grep -Fq 'data-nckh-home="2026"' dist/client/index.html
+          grep -Fq 'EduResearch Hub' dist/client/index.html
+          grep -Fq 'https://nghiencuukhoahoc.id.vn/' dist/client/sitemap.xml
+          if grep -Eiq 'xuongmunonbaohiem|blue sea|bluesea' dist/client/index.html dist/client/sitemap.xml dist/client/robots.txt dist/client/llms.txt; then
+            echo 'ERROR: legacy Blue Sea brand/domain found in build'; exit 1
+          fi
+          if [ -s dist/server/entry.mjs ]; then node --check dist/server/entry.mjs; fi
+          echo "Built Astro commit: $(git rev-parse HEAD)"
+          echo "PASS: GitHub-built homepage and isolated SEO."
+
+      - name: Retain build artifact for rollback or manual inspection
+        uses: actions/upload-artifact@v4
+        with:
+          name: nckh-astro-homepage-build
+          path: source/dist/client/
+          retention-days: 7
+          if-no-files-found: error
+
+      - name: Prepare FTPS client (GitHub-hosted only)
+        if: ${{ github.event_name == 'repository_dispatch' || inputs.deploy }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends lftp
+
+      - name: Deploy validated static homepage to exact NCKH FTPS directory
+        if: ${{ github.event_name == 'repository_dispatch' || inputs.deploy }}
+        shell: bash
+        env:
+          FTP_SERVER: ${{ secrets.FTP_SERVER }}
+          FTP_USERNAME: ${{ secrets.FTP_USERNAME }}
+          FTP_PASSWORD: ${{ secrets.FTP_PASSWORD }}
+        run: |
+          set -euo pipefail
+          set +x
+          target='/domains/nghiencuukhoahoc.webnvn.com/public_html/'
+          test "$target" = '/domains/nghiencuukhoahoc.webnvn.com/public_html/'
+          test -s "$GITHUB_WORKSPACE/source/dist/client/index.html"
+          # GitHub Actions is the only FTP deployment actor. Do not delete
+          # unrelated hosting files; upload assets first, then homepage last.
+          lftp -u "$FTP_USERNAME","$FTP_PASSWORD" "ftp://$FTP_SERVER" <<LFTP
+          set cmd:fail-exit yes
+          set ftp:passive-mode yes
+          set net:max-retries 3
+          set net:timeout 30
+          set ftp:ssl-force yes
+          set ftp:ssl-protect-data yes
+          set ssl:verify-certificate yes
+          cd "$target"
+          get index.html -o "$RUNNER_TEMP/nckh-previous-index.html"
+          mirror -R --parallel=3 --verbose=0 --exclude-glob=index.html "$GITHUB_WORKSPACE/source/dist/client/" .
+          put "$GITHUB_WORKSPACE/source/dist/client/index.html" -o index.html
+          bye
+          LFTP
+          echo 'FTPS deployment from GitHub completed to NCKH frontend directory.' >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Retain previous homepage rollback
+        if: ${{ always() && (github.event_name == 'repository_dispatch' || inputs.deploy) }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: nckh-previous-homepage
+          path: ${{ runner.temp }}/nckh-previous-index.html
+          if-no-files-found: ignore
+          retention-days: 7
+
+      - name: Smoke test NCKH frontend (do not hide DNS/hosting gaps)
+        if: ${{ github.event_name == 'repository_dispatch' || inputs.deploy }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          url='https://nghiencuukhoahoc.webnvn.com/'
+          if curl -fsSL --max-time 18 "$url" | grep -Fq 'data-nckh-home="2026"'; then
+            echo 'PASS: NCKH public HTTPS homepage displays EduResearch Hub.' >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo '::warning::FTPS upload finished, but public HTTPS/hosting does not yet serve the new homepage.'
+            echo 'QA pending: configure DNS/HTTPS/static root for nghiencuukhoahoc.webnvn.com.' >> "$GITHUB_STEP_SUMMARY"
+          fi
