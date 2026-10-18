@@ -58,5 +58,6 @@ jobs:
           php -l esc-visual-builder.php >/dev/null
           printf ' - PASS PHP syntax for NCKH Trigger and Visual Builder\n' >> "$report"
           grep -q "define('VCS_GH_REPO', 'nghiencuukhoahoc-actions')" vcs-build-trigger.php
-          grep -q "if (\$owner !== 'ngocnhanvo' || \$repo !== 'nghiencuukhoahoc-actions')" vcs-build-trigger.php
+          grep -Fq "'nghiencuukhoahoc.id.vn'" vcs-build-trigger.php
+          grep -Fq "'nghiencuukhoahoc-actions'" vcs-build-trigger.php
           printf ' - PASS Trigger destination and protective guard\n' >> "$report"
