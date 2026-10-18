@@ -111,7 +111,14 @@ jobs:
           }).encode('utf-8'))
           if not final.startswith(base+'/wp-admin'):raise RuntimeError('Staging admin login failed')
           final,page=get('/wp-admin/users.php?page=nckh-teacher-approval')
-          if not final.startswith(base+'/wp-admin/users.php') or b'nckh_teacher_approval' not in page:
+          page_text=page.decode('utf-8','replace')
+          valid_title='EduResearch Hub — Duyệt giáo viên' in page_text
+          has_form='nckh_teacher_approval' in page_text
+          empty_state='Chưa có tài khoản EduResearch' in page_text
+          if not final.startswith(base+'/wp-admin/users.php') or not valid_title or not (has_form or empty_state):
+              from urllib.parse import urlsplit
+              print('Admin check path:',urlsplit(final).path)
+              print('Approval UI title present:',valid_title,'form present:',has_form,'empty state:',empty_state)
               raise RuntimeError('Teacher admin approval page did not render')
           print('PASS: Admin can load staging teacher approval UI; no account roles modified.')
           anon=urllib.request.Request(base+'/wp-admin/users.php?page=nckh-teacher-approval')
