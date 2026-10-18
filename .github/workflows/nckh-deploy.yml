@@ -123,6 +123,13 @@ jobs:
           mkdir -p deploy upload
           cp .env deploy/.env
           cp -a dist/. deploy/
+          # DirectAdmin serves public_html/index.html as a static site before Node
+          # is configured. Publish the same compiled Astro client at document root,
+          # while retaining server/ and client/ for the standalone Astro runtime.
+          test -s dist/client/index.html
+          cp -a dist/client/. deploy/
+          test -s deploy/index.html
+          grep -q 'data-nckh-home="2026"' deploy/index.html
           cd deploy
           zip -qr ../upload/nckh-astro.zip .
           cd ..
