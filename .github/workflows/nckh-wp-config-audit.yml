@@ -43,7 +43,7 @@ jobs:
           names=['DB_NAME','DB_HOST','WP_HOME','WP_SITEURL','FORCE_SSL_ADMIN','VCS_GH_REPO','ESC_VISUAL_BUILDER_ASTRO_URL']
           with open(output,'a',encoding='utf8') as o:
             for name in names:
-              pattern=r'define\\s*\\(\\s*[\'"]'+re.escape(name)+r'[\'"]\\s*,\\s*([^;]+)\\);'
+              pattern=r'define\s*\(\s*[\'"]'+re.escape(name)+r'[\'"]\s*,\s*([^;]+)\);'
               matches=re.findall(pattern,conf)
               if not matches:
                 o.write('- `'+name+'`: not explicitly defined.\n')
