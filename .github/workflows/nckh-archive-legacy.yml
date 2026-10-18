@@ -72,6 +72,11 @@ jobs:
             'san-pham','lich-su-mua-hang','thanh-toan-hoan-tat','checkout','cart','thanh-toan-don-hang','gio-hang',
             'xuong-san-xuat-non-bao-hiem-mu-bao-hiem-theo-yeu-cau-blue-sea','san-xuat-mu-bao-hiem-quang-cao',
             'nhan-san-xuat-mu-bao-hiem-quang-cao-chat-luong'}
+          req=urllib.request.Request(base+'/wp-json/wp/v2/posts?per_page=1&status=publish&_fields=id',
+            headers={'X-WP-Nonce':nonce})
+          with opener.open(req,timeout=20) as response:
+            total_before=response.headers.get('X-WP-Total','not available')
+          log('Total published posts before this batch: **'+str(total_before)+'**.')
           pages=get('pages?per_page=100&context=edit')
           changed=[]
           for p in pages:
