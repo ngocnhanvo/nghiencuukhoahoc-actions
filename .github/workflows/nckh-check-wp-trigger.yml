@@ -1,0 +1,88 @@
+name: Check NCKH GitHub Trigger Readiness
+on:
+  issues:
+    types: [opened]
+permissions:
+  contents: read
+  issues: write
+jobs:
+  audit:
+    if: github.repository == 'ngocnhanvo/nghiencuukhoahoc-actions' && github.event.issue.user.login == 'ngocnhanvo' && github.event.issue.title == '[nckh] Verify trigger readiness'
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    env:
+      GH_TOKEN: ${{ github.token }}
+      WP_USER: ${{ secrets.WP_ADMIN_USERNAME }}
+      WP_PASS: ${{ secrets.WP_ADMIN_PASSWORD }}
+      FTP_SERVER: ${{ secrets.FTP_SERVER }}
+      FTP_USERNAME: ${{ secrets.FTP_USERNAME }}
+      FTP_PASSWORD: ${{ secrets.FTP_PASSWORD }}
+    steps:
+      - name: Read-only check of NCKH WordPress GitHub Trigger and wp-config
+        shell: bash
+        run: |
+          set -euo pipefail
+          set +x
+          report="${RUNNER_TEMP}/trigger-check.md"
+          python3 - "$report" <<'PY'
+          import os,sys,re,json,io,ftplib,http.cookiejar,urllib.request,urllib.parse,urllib.error
+          from urllib.parse import urlparse
+          base='https://api-nghiencuukhoahoc.webnvn.com'
+          report=sys.argv[1]
+          def log(t):
+            with open(report,'a',encoding='utf8') as f:f.write(t+'\n')
+          log('## NCKH GitHub Trigger readiness — read-only\n')
+          browser=urllib.request.build_opener(urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()))
+          def req(path,data=None,headers=None):
+            request=urllib.request.Request(base+path,data=data,headers=headers or {})
+            with browser.open(request,timeout=28) as result:
+              return result.status,result.geturl(),result.read()
+          req('/wp-login.php')
+          status,url,_=req('/wp-login.php',urllib.parse.urlencode({
+            'log':os.environ['WP_USER'],'pwd':os.environ['WP_PASS'],'wp-submit':'Log In',
+            'redirect_to':base+'/wp-admin/','testcookie':'1'
+          }).encode())
+          assert url.startswith(base+'/wp-admin'),'WP admin login failed'
+          _,_,n=req('/wp-admin/admin-ajax.php?action=rest-nonce')
+          nonce=n.decode().strip()
+          assert re.fullmatch('[A-Za-z0-9]{10,16}',nonce),'WP REST nonce missing'
+          def api(p):
+            _,_,content=req('/wp-json/wp/v2/'+p,headers={'X-WP-Nonce':nonce})
+            return json.loads(content)
+          admin=api('users/me?context=edit')
+          setting=api('settings')
+          assert 'administrator' in admin.get('roles',[]) and setting.get('url')==base,'Wrong WP identity'
+          plugins=api('plugins?per_page=100')
+          trigger=next((x for x in plugins if x.get('plugin')=='github-trigger/vcs-build-trigger'),None)
+          log('- WP identity: correct NCKH / administrator.')
+          log('- GitHub Trigger plugin: '+(trigger.get('status') if trigger else 'NOT FOUND'))
+          try:
+            items=api('thong-tin-chung?context=edit&per_page=3')
+            domains=[str((v.get('acf') or {}).get('domain','')) for v in items]
+            log('- Common info domain field(s): '+', '.join(d for d in domains if re.fullmatch('[a-z0-9.]+',d))[:120])
+          except urllib.error.HTTPError as e:
+            log('- Common info REST: HTTP '+str(e.code)+' (domain not confirmed)')
+          parsed=urlparse(os.environ['FTP_SERVER'] if '://' in os.environ['FTP_SERVER'] else 'ftps://'+os.environ['FTP_SERVER'])
+          ftp=ftplib.FTP_TLS()
+          ftp.connect(parsed.hostname,parsed.port or 21,timeout=20)
+          ftp.login(os.environ['FTP_USERNAME'],os.environ['FTP_PASSWORD'])
+          ftp.prot_p()
+          ftp.cwd('/domains/api-nghiencuukhoahoc.webnvn.com/public_html')
+          data=io.BytesIO()
+          ftp.retrbinary('RETR wp-config.php',data.write)
+          cfg=data.getvalue().decode('utf8','replace')
+          assert re.search(r"define\s*\(\s*['\"]DB_NAME['\"]\s*,\s*['\"]nghiencuukhoahoc_181026['\"]",cfg),'Wrong DB target'
+          # Never emit token values, even partially.
+          tok=re.search(r"define\s*\(\s*['\"]VCS_GH_TOKEN['\"]\s*,\s*([^;]+)\);",cfg)
+          tokenConfigured=False
+          if tok:
+            value=tok.group(1).strip().rstrip(',')
+            tokenConfigured=not bool(re.fullmatch(r"['\"]\s*['\"]",value))
+          repo=re.search(r"define\s*\(\s*['\"]VCS_GH_REPO['\"]\s*,\s*['\"]([^'\"]+)['\"]",cfg)
+          log('- VCS_GH_TOKEN: '+('defined, non-empty expression' if tokenConfigured else 'not configured in wp-config.php'))
+          log('- VCS_GH_REPO override: '+(repo.group(1) if repo else 'none — plugin NCKH default'))
+          log('- WordPress database: NCKH verified.')
+          ftp.quit()
+          log('No WordPress settings, plugin state, GitHub secrets or hosting files were modified.')
+          PY
+          gh api -X POST "repos/${GITHUB_REPOSITORY}/issues/${{ github.event.issue.number }}/comments" -F body=@"$report" >/dev/null
