@@ -73,8 +73,8 @@ jobs:
               changed_autosave=False
               if newest:
                   candidate=(newest.get('content') or {}).get('raw')
-                  changed_autosave=isinstance(candidate,str) and candidate!=original and (newest.get('modified_gmt','')>page.get('modified_gmt',''))
-                  lines.append('- Latest autosave modified GMT: '+str(newest.get('modified_gmt'))+'; newer and different: '+str(changed_autosave))
+                  changed_autosave=(newest.get('modified_gmt','')>page.get('modified_gmt','')) and (not isinstance(candidate,str) or candidate!=original)
+                  lines.append('- Latest autosave modified GMT: '+str(newest.get('modified_gmt'))+'; raw available: '+str(isinstance(candidate,str))+'; newer unsaved data or unverifiable: '+str(changed_autosave))
                   if changed_autosave:
                       lines.append('- Autosave content hash '+sha(candidate)+'; legacy header count '+str(len(pattern.findall(candidate))))
               else:
