@@ -84,9 +84,32 @@ jobs:
             printf 'Admin capability endpoint `%s`: HTTP **%s**, redirected to login: **%s**, permission-denied content: **%s**.\\n\\n' "$route" "$code" "$redirect" "$denied" >> "$report"
             if [ "$code" = '200' ] && [ "$redirect" = 'no' ] && [ "$denied" = 'no' ]; then valid_admin=$((valid_admin+1)); fi
           done
-          if [ "$valid_admin" -eq 2 ]; then
-            printf '**Conclusion: Administrator-level access verified** for the standard Users and General Settings screens.\\n\\n' >> "$report"
+          # WordPress core admin-ajax action only issues a temporary REST nonce.
+          # It does not change users, pages, settings or repository data.
+          nonce=$(curl -sS -k --connect-timeout 9 --max-time 18 -b "$jar" -c "$jar" "$base/wp-admin/admin-ajax.php?action=rest-nonce" 2>/dev/null || true)
+          nonce="${nonce//$'\\r'/}"
+          if [[ "$nonce" =~ ^[a-zA-Z0-9]{10,16}$ ]]; then
+            role_code=$(curl -sS -k --connect-timeout 9 --max-time 18 -b "$jar" -c "$jar" \
+              -H "X-WP-Nonce: $nonce" \
+              -o "${RUNNER_TEMP}/nckh-self.json" \
+              -w '%{http_code}' "$base/wp-json/wp/v2/users/me?context=edit" 2>/dev/null || true)
+            roles=$(jq -c '.roles // []' "${RUNNER_TEMP}/nckh-self.json" 2>/dev/null || printf '[]')
+            printf 'Authenticated WordPress REST user endpoint: HTTP **%s**, role(s): **%s**.\\n\\n' "$role_code" "$roles" >> "$report"
+            if [ "$role_code" = 200 ] && printf '%s' "$roles" | grep -q 'administrator'; then
+              printf '**Conclusion: Administrator role verified through the authenticated WordPress REST API.**\\n\\n' >> "$report"
+            else
+              printf '**Conclusion: Administrator role not verified by REST API**; see admin-screen checks above.\\n\\n' >> "$report"
+            fi
           else
-            printf '**Conclusion: Administrator-level access not conclusively verified**. The account can log in, but one or more capability screens may be restricted or unavailable.\\n\\n' >> "$report"
+            printf 'WordPress REST nonce was unavailable; could not query the current account role.\\n\\n' >> "$report"
+            if [ "$valid_admin" -eq 2 ]; then
+              printf 'Both standard admin screens appear accessible, but account role is not independently verified.\\n\\n' >> "$report"
+            else
+              printf 'The account can log in, but Administrator capabilities remain unconfirmed.\\n\\n' >> "$report"
+            fi
           fi
+          for route in users.php options-general.php; do
+            title=$(grep -oim1 -E '<title>[^<]+' "${RUNNER_TEMP}/route-${route}.html" 2>/dev/null | sed 's/<title>//I' | cut -c1-130 || true)
+            printf 'Screen `%s` title: `%s`.\\n\\n' "$route" "${title:-unknown}" >> "$report"
+          done
           printf 'Only GET requests plus one login POST were used; no site content, settings or users were modified. Credential values are not included.\n' >> "$report"
