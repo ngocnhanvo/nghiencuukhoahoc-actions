@@ -124,7 +124,18 @@ jobs:
           grep -Fq 'EduResearch Hub' dist/client/index.html
           grep -Fq 'https://nghiencuukhoahoc.id.vn/' dist/client/sitemap.xml
           if grep -Eiq 'xuongmunonbaohiem|blue sea|bluesea' dist/client/index.html dist/client/sitemap.xml dist/client/robots.txt dist/client/llms.txt; then
-            echo 'ERROR: legacy Blue Sea brand/domain found in build'; exit 1
+            echo 'ERROR: legacy Blue Sea brand/domain found in build'
+            python3 - <<'PY'
+          import pathlib,re
+          for name in ('index.html','sitemap.xml','robots.txt','llms.txt'):
+            file=pathlib.Path('dist/client')/name
+            if not file.exists(): continue
+            text=file.read_text(encoding='utf8')
+            hits=list(re.finditer(r'xuongmunonbaohiem|blue sea|bluesea',text,re.I))
+            for m in hits[:6]:
+              print('Legacy match',name,'offset',m.start(),'context',repr(text[max(0,m.start()-65):m.end()+65])[:180])
+          PY
+            exit 1
           fi
           if [ -s dist/server/entry.mjs ]; then node --check dist/server/entry.mjs; fi
           echo "Built Astro commit: $(git rev-parse HEAD)"
