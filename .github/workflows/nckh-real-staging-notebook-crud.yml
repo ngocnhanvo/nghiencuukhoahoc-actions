@@ -108,19 +108,25 @@ jobs:
               if status!=200 or int(still['items'][0]['id'])!=second_id:
                   raise RuntimeError('Failed reorder unexpectedly changed database order')
               print('PASS: Stale reorder was fully rolled back.')
-              status,del_result=api('sections/'+str(section_id),'DELETE')
+              status,stale_delete=api('sections/'+str(section_id),'DELETE',{'version':2})
+              if status!=409:raise RuntimeError('Stale DELETE failed optimistic version guard')
+              print('PASS: Stale section deletion rejected with HTTP 409.')
+              status,del_result=api('sections/'+str(section_id),'DELETE',{'version':3})
               if status!=200 or del_result.get('deleted') is not True:raise RuntimeError('Could not remove QA section')
               section_id=None
-              status,removed=api('sections/'+str(second_id),'DELETE')
+              status,removed=api('sections/'+str(second_id),'DELETE',{'version':2})
               if status!=200 or removed.get('deleted') is not True:raise RuntimeError('Could not remove second QA section')
               second_id=None
               print('PASS: Both QA sections deleted after verification.')
           finally:
-              if second_id is not None:api('sections/'+str(second_id),'DELETE')
-              if section_id is not None:
-                  # Try best-effort cleanup of test section if no teacher comments exist.
-                  api('sections/'+str(section_id),'DELETE')
               if project_id is not None:
+                  # Cleanup ONLY our two synthetic QA sections, reading current versions first.
+                  status,snapshot=api('projects/'+str(project_id)+'/sections')
+                  if status==200:
+                      tracked={x for x in (section_id,second_id) if x is not None}
+                      for row in snapshot.get('items',[]):
+                          if int(row['id']) in tracked:
+                              api('sections/'+str(row['id']),'DELETE',{'version':int(row['version'])})
                   status,result=api('projects/'+str(project_id),'PATCH',{'status':'archived'})
                   if status!=200 or not result.get('updated'):
                       raise RuntimeError('QA project could not be archived')
