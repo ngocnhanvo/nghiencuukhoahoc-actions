@@ -1,0 +1,24 @@
+name: NCKH Read Trigger Audit Status
+on:
+  issues:
+    types: [opened]
+permissions:
+  contents: read
+  actions: read
+  issues: write
+jobs:
+  report:
+    if: github.repository == 'ngocnhanvo/nghiencuukhoahoc-actions' && github.event.issue.user.login == 'ngocnhanvo' && github.event.issue.title == '[nckh] Check trigger audit'
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Read-only status of trigger readiness workflow
+        shell: bash
+        run: |
+          set -euo pipefail
+          report="${RUNNER_TEMP}/out.md"
+          printf '## Trigger readiness workflow status\n\n' > "$report"
+          gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/nckh-check-wp-trigger.yml/runs?per_page=5" --jq \
+            '.workflow_runs[] | "- Run "+(.id|tostring)+" / "+.status+" / "+(.conclusion//"pending")+" — "+.html_url' >> "$report"
+          gh api -X POST "repos/${GITHUB_REPOSITORY}/issues/${{ github.event.issue.number }}/comments" -F body=@"$report" >/dev/null
