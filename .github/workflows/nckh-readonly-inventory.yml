@@ -1,0 +1,60 @@
+name: NCKH isolation read-only inventory
+on:
+  issues:
+    types: [opened]
+permissions:
+  contents: read
+  issues: write
+jobs:
+  inspect:
+    if: github.repository == 'ngocnhanvo/nghiencuukhoahoc-actions' && github.event.issue.title == '[audit] NCKH read-only inventory' && github.event.issue.user.login == 'ngocnhanvo'
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    env:
+      GH_TOKEN: ${{ github.token }}
+      WP_USER: ${{ secrets.WP_ADMIN_USERNAME }}
+      WP_PASS: ${{ secrets.WP_ADMIN_PASSWORD }}
+      SOURCE_PAT: ${{ secrets.SOURCE_REPO_PAT }}
+    steps:
+      - name: Read WordPress options and configured plugins
+        shell: bash
+        run: |
+          set -uo pipefail
+          set +x
+          url="https://api-nghiencuukhoahoc.webnvn.com"
+          report="${RUNNER_TEMP}/inventory.md"
+          jar="${RUNNER_TEMP}/wp-cookies"
+          printf '## NCKH read-only inventory\n\n' > "$report"
+          public=$(curl -ksS -L -m 20 -o "${RUNNER_TEMP}/public.json" -w '%{http_code}' "$url/wp-json/" || true)
+          jq -r '"Public WP name: " + (.name // "unknown") + "\nPublic WP REST URL: " + (.url // "unknown")' "${RUNNER_TEMP}/public.json" >> "$report" 2>/dev/null || true
+          echo "" >> "$report"
+          if [ -n "${WP_USER:-}" ] && [ -n "${WP_PASS:-}" ]; then
+            curl -ksS -L -m 15 -c "$jar" -b "$jar" -o /dev/null "$url/wp-login.php" || true
+            login=$(curl -ksS -L -m 20 --max-redirs 4 -b "$jar" -c "$jar" \
+              --data-urlencode "log=$WP_USER" --data-urlencode "pwd=$WP_PASS" \
+              --data-urlencode 'wp-submit=Log In' \
+              --data-urlencode "redirect_to=$url/wp-admin/" \
+              --data-urlencode 'testcookie=1' \
+              -o /dev/null -w '%{http_code} %{url_effective}' "$url/wp-login.php" || true)
+            echo "WP login final endpoint: ${login#* }" >> "$report"
+            nonce=$(curl -ksS -m 15 -b "$jar" -c "$jar" "$url/wp-admin/admin-ajax.php?action=rest-nonce" || true)
+            if [[ "$nonce" =~ ^[A-Za-z0-9]{10,16}$ ]]; then
+              settings=$(curl -ksS -m 18 -b "$jar" -c "$jar" -H "X-WP-Nonce: $nonce" -o "${RUNNER_TEMP}/settings.json" -w '%{http_code}' "$url/wp-json/wp/v2/settings" || true)
+              echo "Settings endpoint: HTTP $settings" >> "$report"
+              if [ "$settings" = 200 ]; then
+                jq -r '"Site title: " + (.title // "unknown") + "\nSite URL (WordPress REST): " + (.url // "unknown") + "\nTimezone: " + (.timezone_string // "unknown")' "${RUNNER_TEMP}/settings.json" >> "$report"
+              fi
+              pcode=$(curl -ksS -m 18 -b "$jar" -c "$jar" -H "X-WP-Nonce: $nonce" -o "${RUNNER_TEMP}/plugins.json" -w '%{http_code}' "$url/wp-json/wp/v2/plugins?per_page=100" || true)
+              echo "Plugins API: HTTP $pcode" >> "$report"
+              if [ "$pcode" = 200 ]; then
+                jq -r '[.[] | select((.plugin + " " + (.name // "")) | test("github|trigger|redirect|seo|table|visual";"i")) | {plugin,status}] | .[:20] | tostring' "${RUNNER_TEMP}/plugins.json" >> "$report" 2>/dev/null || true
+              fi
+            else
+              echo 'WP REST nonce unavailable' >> "$report"
+            fi
+          else
+            echo 'Admin credentials absent' >> "$report"
+          fi
+          echo '' >> "$report"
+          echo 'This inventory did not change WordPress, FTP, or Blue Sea.' >> "$report"
+          gh api -X POST "repos/${GITHUB_REPOSITORY}/issues/${{ github.event.issue.number }}/comments" -F body=@"$report" >/dev/null
