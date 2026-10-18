@@ -22,7 +22,7 @@ jobs:
       - name: Verify hostname, credential presence, and admin capabilities without changing data
         shell: bash
         run: |
-          set -euo pipefail
+          set -uo pipefail
           set +x
           base='https://api-nghiencuukhoahoc.webnvn.com'
           report="${RUNNER_TEMP}/nckh-admin-report.md"
@@ -70,12 +70,23 @@ jobs:
             printf 'Conclusion: **login not verified**. Possible invalid credentials, anti-bot/CAPTCHA, login restriction, or blocked request. No claim about role.\n' >> "$report"
             exit 0
           fi
+          valid_admin=0
           for route in users.php options-general.php; do
-            response=$(curl -sS -k -L --max-redirs 5 --connect-timeout 9 --max-time 25 \
+            response=$(curl -sS -k -L --max-redirs 4 --connect-timeout 9 --max-time 20 \
               -b "$jar" -c "$jar" -o "${RUNNER_TEMP}/route-${route}.html" \
               -w '%{http_code} %{url_effective}' "$base/wp-admin/$route" 2>/dev/null || true)
-            safe="$(printf '%s' "$response" | sed -E 's|([?&])(redirect_to|reauth|wpnonce)=[^& ]*|\1\2=REDACTED|g')"
-            printf 'Admin route `%s`: `%s`.\n\n' "$route" "$safe" >> "$report"
+            code="${response%% *}"
+            final="${response#* }"
+            denied='no'
+            if grep -iqE 'Sorry, you are not allowed|You do not have sufficient permissions|Không có quyền truy cập' "${RUNNER_TEMP}/route-${route}.html" 2>/dev/null; then denied='yes'; fi
+            redirect='no'
+            if [[ "$final" == *wp-login.php* ]]; then redirect='yes'; fi
+            printf 'Admin capability endpoint `%s`: HTTP **%s**, redirected to login: **%s**, permission-denied content: **%s**.\\n\\n' "$route" "$code" "$redirect" "$denied" >> "$report"
+            if [ "$code" = '200' ] && [ "$redirect" = 'no' ] && [ "$denied" = 'no' ]; then valid_admin=$((valid_admin+1)); fi
           done
-          printf 'Interpretation: HTTP 200 on `/wp-admin/users.php` and `/wp-admin/options-general.php` without a login redirect supports administrator-level access. A blocked/redirected page is inconclusive when custom WordPress security plugins are present.\n\n' >> "$report"
+          if [ "$valid_admin" -eq 2 ]; then
+            printf '**Conclusion: Administrator-level access verified** for the standard Users and General Settings screens.\\n\\n' >> "$report"
+          else
+            printf '**Conclusion: Administrator-level access not conclusively verified**. The account can log in, but one or more capability screens may be restricted or unavailable.\\n\\n' >> "$report"
+          fi
           printf 'Only GET requests plus one login POST were used; no site content, settings or users were modified. Credential values are not included.\n' >> "$report"
