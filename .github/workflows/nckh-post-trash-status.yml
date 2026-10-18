@@ -1,0 +1,55 @@
+name: Check NCKH WordPress blog post statuses
+on:
+  issues:
+    types: [opened]
+permissions:
+  contents: read
+  issues: write
+jobs:
+  status:
+    if: github.repository == 'ngocnhanvo/nghiencuukhoahoc-actions' && github.event.issue.user.login == 'ngocnhanvo' && github.event.issue.title == '[nckh] Check Trash statuses'
+    runs-on: ubuntu-latest
+    timeout-minutes: 4
+    env:
+      WP_USER: ${{ secrets.WP_ADMIN_USERNAME }}
+      WP_PASS: ${{ secrets.WP_ADMIN_PASSWORD }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Check counts on own WordPress site without changing data
+        shell: bash
+        run: |
+          set -euo pipefail
+          set +x
+          report="${RUNNER_TEMP}/wp-status.md"
+          printf '## NCKH WordPress blog status check\n\n' > "$report"
+          python3 - "$report" <<'PY'
+          import os,sys,re,urllib.request,urllib.parse,http.cookiejar,json
+          target='https://api-nghiencuukhoahoc.webnvn.com'
+          report=sys.argv[1]
+          opener=urllib.request.build_opener(urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()))
+          def fetch(path,body=None,headers=None):
+            request=urllib.request.Request(target+path,data=body,headers=headers or {})
+            with opener.open(request,timeout=22) as response:
+              return response.read(),dict(response.headers)
+          fetch('/wp-login.php')
+          fetch('/wp-login.php',urllib.parse.urlencode({
+            'log':os.environ['WP_USER'],'pwd':os.environ['WP_PASS'],
+            'wp-submit':'Log In','redirect_to':target+'/wp-admin/','testcookie':'1'
+          }).encode())
+          nonce,_=fetch('/wp-admin/admin-ajax.php?action=rest-nonce')
+          nonce=nonce.decode().strip()
+          assert re.fullmatch('[a-zA-Z0-9]{10,16}',nonce),'No authenticated nonce'
+          header={'X-WP-Nonce':nonce}
+          site,_=fetch('/wp-json/wp/v2/settings',headers=header)
+          assert json.loads(site).get('url')==target,'Wrong website'
+          counts={}
+          for status in ['publish','draft','pending','private','future','trash']:
+            query=urllib.parse.urlencode({'status':status,'per_page':1,'context':'edit','_fields':'id,status,type'})
+            data,h=fetch('/wp-json/wp/v2/posts?'+query,headers=header)
+            counts[status]=int(h.get('X-WP-Total',0))
+          with open(report,'a',encoding='utf8') as f:
+            f.write('WordPress: `'+target+'`\n\n')
+            f.write('Counts: `'+json.dumps(counts)+'`\n\n')
+            f.write('This was read-only.\n')
+          PY
+          gh api -X POST "repos/${GITHUB_REPOSITORY}/issues/${{ github.event.issue.number }}/comments" -F body=@"$report" >/dev/null
