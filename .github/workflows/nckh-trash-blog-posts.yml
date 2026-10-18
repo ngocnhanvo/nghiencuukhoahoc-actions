@@ -110,7 +110,7 @@ jobs:
             failures.extend(pid for good,pid in answers if not good)
             state_after=list_first(state)[1]
             trash_after=list_first('trash')[1]
-            if state_before-state_after<successes or trash_after-trash_before<successes:
+            if state_before-state_after<successes:
               out('Status check failed for '+state+'; stopping. Before: '+str(state_before)+', after: '+str(state_after)+', Trash change: '+str(trash_after-trash_before))
               break
             if failures or successes==0:
