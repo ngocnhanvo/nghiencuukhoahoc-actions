@@ -1,0 +1,67 @@
+name: Remove temporary NCKH PHP maintenance hook
+on:
+  issues:
+    types: [opened]
+permissions:
+  contents: read
+  issues: write
+jobs:
+  remove:
+    if: github.repository == 'ngocnhanvo/nghiencuukhoahoc-actions' && github.event.issue.user.login == 'ngocnhanvo' && github.event.issue.title == '[nckh] Remove temporary PHP'
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    env:
+      GH_TOKEN: ${{ github.token }}
+      SOURCE_PAT: ${{ secrets.SOURCE_REPO_PAT }}
+      FTP_SERVER: ${{ secrets.FTP_SERVER }}
+      FTP_USERNAME: ${{ secrets.FTP_USERNAME }}
+      FTP_PASSWORD: ${{ secrets.FTP_PASSWORD }}
+    steps:
+      - name: Remove exact NCKH maintenance PHP file after checksum validation
+        shell: bash
+        run: |
+          set -euo pipefail
+          set +x
+          report="${RUNNER_TEMP}/removed.md"
+          printf '## Remove NCKH temporary PHP\n\n' > "$report"
+          finish() {
+            rc=$?
+            printf '\nExit status: %s\n' "$rc" >> "$report"
+            gh api -X POST "repos/${GITHUB_REPOSITORY}/issues/${{ github.event.issue.number }}/comments" -F body=@"$report" >/dev/null || true
+          }
+          trap finish EXIT
+          curl -fsSL --max-time 35 -H "Authorization: Bearer ${SOURCE_PAT}" \
+            -H 'Accept: application/vnd.github.raw+json' \
+            'https://api.github.com/repos/ngocnhanvo/nghiencuukhoahoc-php/contents/wp-content/mu-plugins/nckh-one-time-cleanup.php?ref=master' \
+            -o "${RUNNER_TEMP}/expected.php"
+          python3 - "${RUNNER_TEMP}/expected.php" "$report" <<'PY'
+          import os,sys,io,ftplib,hashlib,re
+          from urllib.parse import urlparse
+          want=open(sys.argv[1],'rb').read()
+          report=sys.argv[2]
+          ftp=os.environ['FTP_SERVER']
+          url=urlparse(ftp if '://' in ftp else 'ftps://'+ftp)
+          conn=ftplib.FTP_TLS()
+          conn.connect(url.hostname,url.port or 21,timeout=15)
+          conn.login(os.environ['FTP_USERNAME'],os.environ['FTP_PASSWORD'])
+          conn.prot_p()
+          conn.cwd('/domains/api-nghiencuukhoahoc.webnvn.com/public_html')
+          config=io.BytesIO()
+          conn.retrbinary('RETR wp-config.php',config.write)
+          assert re.search(r"define\s*\(\s*['\"]DB_NAME['\"]\s*,\s*['\"]nghiencuukhoahoc_181026['\"]",config.getvalue().decode('utf8','replace')),'NCKH DB guard failed'
+          name='wp-content/mu-plugins/nckh-one-time-cleanup.php'
+          remote=io.BytesIO()
+          conn.retrbinary('RETR '+name,remote.write)
+          assert hashlib.sha256(want).digest()==hashlib.sha256(remote.getvalue()).digest(),'Uploaded temporary PHP differs; refusing delete'
+          conn.delete(name)
+          try:
+              conn.retrbinary('RETR '+name,lambda chunk:None)
+              raise RuntimeError('Temporary PHP still exists after removal')
+          except ftplib.error_perm as err:
+              if not str(err).startswith('550'):raise
+          conn.quit()
+          with open(report,'a',encoding='utf8') as f:
+              f.write('- NCKH database identity and file checksum verified.\n')
+              f.write('- Temporary PHP file removed from NCKH wp-content/mu-plugins.\n')
+              f.write('- ESC Table and WordPress plugins remain installed.\n')
+          PY
