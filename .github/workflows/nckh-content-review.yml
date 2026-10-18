@@ -1,0 +1,29 @@
+name: NCKH content cleanup preview
+on:
+  issues:
+    types: [opened]
+permissions:
+  contents: read
+  issues: write
+jobs:
+  inventory:
+    if: github.repository == 'ngocnhanvo/nghiencuukhoahoc-actions' && github.event.issue.title == '[audit] NCKH content cleanup preview' && github.event.issue.user.login == 'ngocnhanvo'
+    runs-on: ubuntu-latest
+    timeout-minutes: 4
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Read published page slugs and mark legacy content (no deletes)
+        shell: bash
+        run: |
+          set -euo pipefail
+          report="${RUNNER_TEMP}/cleanup.md"
+          base="https://api-nghiencuukhoahoc.webnvn.com/wp-json/wp/v2"
+          printf '## NCKH content clean-up review (read only)\n\n| Page ID | Slug | Status for review |\n|---:|---|---|\n' > "$report"
+          curl -fsSL -m 30 "$base/pages?per_page=100" -o "${RUNNER_TEMP}/pages.json"
+          jq -r '.[] | [.id, .slug, (if ((.title.rendered // "") + " " + (.content.rendered // "")) | test("xuongmunonbaohiem|blue.?sea|mũ bảo hiểm|nón bảo hiểm";"i") then "Legacy candidate — REVIEW" else "Review / may keep" end)] | @tsv' "${RUNNER_TEMP}/pages.json" \
+            | while IFS=$'\t' read -r id slug label; do
+                printf '| %s | `%s` | %s |\n' "$id" "$slug" "$label" >> "$report"
+              done
+          printf '\nThis includes published pages only; drafts, private posts, products and all media require a separate backup and review. No content was changed or deleted.\n' >> "$report"
+          gh api -X POST "repos/${GITHUB_REPOSITORY}/issues/${{ github.event.issue.number }}/comments" -F body=@"$report" >/dev/null
