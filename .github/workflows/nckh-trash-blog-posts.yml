@@ -87,10 +87,8 @@ jobs:
             for attempt in range(3):
               try:
                 result,_=request(url,method='DELETE',headers=auth)
-                if isinstance(result,dict) and result.get('deleted') is False:
+                if isinstance(result,dict) and isinstance(result.get('deleted'),bool):
                   return True,item['id']
-                if isinstance(result,dict) and result.get('deleted') is True:
-                  return False,item['id']
                 return False,item['id']
               except urllib.error.HTTPError as e:
                 if e.code==404:return True,item['id']
@@ -101,8 +99,9 @@ jobs:
             return False,item['id']
           while time.monotonic()-start<47*60:
             batch=[]
+            state_before=0
             for state in statuses:
-              batch,_=list_first(state)
+              batch,state_before=list_first(state)
               if batch:break
             if not batch:break
             with concurrent.futures.ThreadPoolExecutor(max_workers=3) as pool:
@@ -110,13 +109,16 @@ jobs:
             successes=sum(1 for good,pid in answers if good)
             moved+=successes
             failures.extend(pid for good,pid in answers if not good)
+            state_after=list_first(state)[1]
+            if state_before-state_after<successes:
+              out('Count check failed for '+state+'; stopping. Before: '+str(state_before)+', after: '+str(state_after))
+              break
             if failures or successes==0:
               out('Stopped because a batch could not be fully moved; failed IDs count: '+str(len(failures)))
               break
             if moved%300<30:
               out('Progress: '+str(moved)+' blog posts moved to Trash.')
           after={status:list_first(status)[1] for status in statuses}
-          trash_total=list_first('trash')[1] if False else None
           out('Posts moved to Trash in this run: **'+str(moved)+'**.')
           out('Remaining outside Trash: '+json.dumps(after))
           if sum(after.values())==0:out('Verified: no published/draft/pending/private/future blog posts remain.')
