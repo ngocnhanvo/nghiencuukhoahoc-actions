@@ -1,0 +1,95 @@
+name: Run approved NCKH PHP cleanup
+on:
+  issues:
+    types: [opened]
+permissions:
+  contents: read
+  issues: write
+concurrency:
+  group: nckh-one-time-esc-tags
+  cancel-in-progress: false
+jobs:
+  clean:
+    if: github.repository == 'ngocnhanvo/nghiencuukhoahoc-actions' && github.event.issue.user.login == 'ngocnhanvo' && github.event.issue.title == '[nckh] Run ESC Table and tag cleanup'
+    runs-on: ubuntu-latest
+    timeout-minutes: 16
+    env:
+      GH_TOKEN: ${{ github.token }}
+      WP_USER: ${{ secrets.WP_ADMIN_USERNAME }}
+      WP_PASS: ${{ secrets.WP_ADMIN_PASSWORD }}
+    steps:
+      - name: Clean only approved NCKH tags and 15 ESC Tables through guarded REST
+        shell: bash
+        run: |
+          set -euo pipefail
+          set +x
+          report="${RUNNER_TEMP}/cleanup-results.md"
+          printf '## NCKH ESC Table and post-tag cleanup\n\n' > "$report"
+          finish() {
+            code=$?
+            printf '\nExit code: %s\n' "$code" >> "$report"
+            gh api -X POST "repos/${GITHUB_REPOSITORY}/issues/${{ github.event.issue.number }}/comments" -F body=@"$report" >/dev/null || true
+          }
+          trap finish EXIT
+          python3 - "$report" <<'PY'
+          import os,sys,json,re,time,urllib.request,urllib.parse,http.cookiejar
+          out=sys.argv[1]
+          host='https://api-nghiencuukhoahoc.webnvn.com'
+          uri='/wp-json/nckh-maintenance/v1/cleanup'
+          jar=http.cookiejar.CookieJar()
+          browser=urllib.request.build_opener(urllib.request.HTTPCookieProcessor(jar))
+          def call(path,body=None,headers=None):
+              req=urllib.request.Request(host+path,data=body,headers=headers or {})
+              with browser.open(req,timeout=45) as res:return res.status,res.geturl(),res.read()
+          def log(line):
+              with open(out,'a',encoding='utf8') as f:f.write(line+'\n')
+          call('/wp-login.php')
+          code,dest,_=call('/wp-login.php',urllib.parse.urlencode({
+              'log':os.environ['WP_USER'],'pwd':os.environ['WP_PASS'],
+              'wp-submit':'Log In','redirect_to':host+'/wp-admin/','testcookie':'1'
+          }).encode())
+          assert dest.startswith(host+'/wp-admin'), 'Admin login failed'
+          _,_,nonce=call('/wp-admin/admin-ajax.php?action=rest-nonce')
+          nonce=nonce.decode().strip()
+          assert re.fullmatch('[A-Za-z0-9]{10,16}',nonce),'Missing authenticated nonce'
+          auth={'X-WP-Nonce':nonce}
+          def audit():
+              status,_,raw=call(uri,headers=auth)
+              assert status==200
+              return json.loads(raw)
+          def run(part):
+              payload=json.dumps({'confirm':'CLEAN_ONLY_NCKH_APPROVED_DATA','part':part}).encode()
+              status,_,raw=call(uri,payload,{'X-WP-Nonce':nonce,'Content-Type':'application/json'})
+              assert status==200
+              return json.loads(raw)
+          before=audit()
+          expected={'contact_00'}.union({'home_%02d'%i for i in range(14)})
+          assert set(before['table_ids'])==expected,'ESC Table identity mismatch, refusing cleanup'
+          count=int(before['tag_count'])
+          assert 0<=count<=2000,'Unexpected tags total'
+          log('Preflight: tags **'+str(count)+'**; ESC Tables **15**; NCKH Administrator authenticated.')
+          removed=0
+          for attempt in range(30):
+              if count==0:break
+              result=run('tags')
+              n=int(result['removed'])
+              remaining=int(result['remaining'])
+              if n<=0 or remaining>=count:
+                  raise RuntimeError('Tag cleanup no progress')
+              removed+=n
+              count=remaining
+              if attempt%4==0 or count==0:
+                  log('Tag cleanup progress: removed '+str(removed)+'; remaining '+str(count)+'.')
+              time.sleep(0.2)
+          assert count==0,'Not all tags removed after bounded iterations'
+          table_result=run('tables')
+          removed_ids=table_result['removed_ids']
+          assert set(removed_ids)==expected,'ESC Table deletion response incomplete'
+          assert table_result.get('remaining_ids')==[],'ESC Tables still present'
+          after=audit()
+          assert int(after['tag_count'])==0,'Tags reappeared after cleanup'
+          assert after['table_ids']==[],'Tables remain after cleanup'
+          log('RESULT: **0** post tags and **0** ESC Tables remain.')
+          log('Deleted in this run: '+str(removed)+' tags; '+str(len(removed_ids))+' ESC Tables.')
+          log('The ESC Table plugin itself was not removed; no pages or media deleted.')
+          PY
