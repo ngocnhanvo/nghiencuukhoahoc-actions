@@ -21,7 +21,7 @@ jobs:
         || (github.event_name == 'repository_dispatch'
           && (github.event.client_payload.site_domain == 'nghiencuukhoahoc.id.vn'
               || github.event.client_payload.site_domain == 'nghiencuukhoahoc.webnvn.com'))
-        ))
+        )
     runs-on: ubuntu-latest
     timeout-minutes: 35
     env:
