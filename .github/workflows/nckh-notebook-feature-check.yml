@@ -5,11 +5,17 @@ on:
     paths:
       - '.github/workflows/nckh-notebook-feature-check.yml'
   workflow_dispatch:
+  issues:
+    types: [opened]
 permissions:
   contents: read
 jobs:
   notebook:
-    if: github.repository == 'ngocnhanvo/nghiencuukhoahoc-actions'
+    if: >-
+      github.repository == 'ngocnhanvo/nghiencuukhoahoc-actions'
+      && (github.event_name != 'issues'
+          || (github.event.issue.user.login == 'ngocnhanvo'
+              && github.event.issue.title == '[nckh] Verify notebook source only'))
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
