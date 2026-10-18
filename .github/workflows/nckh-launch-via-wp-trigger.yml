@@ -57,8 +57,21 @@ jobs:
           nonce=state.get('nonce','')
           assert re.fullmatch('[A-Za-z0-9]{10,16}',nonce),'Invalid WordPress build nonce'
           if state.get('initial_active'):
-            log('WordPress reports another build in progress. Refused duplicate dispatch.')
-            raise RuntimeError('A build is already running')
+            # The WordPress UI may retain a completed build lock until it polls
+            # GitHub. Reconcile through the plugin's supported AJAX endpoint.
+            check=urllib.parse.urlencode({
+              'action':'vcs_check_build_status',
+              'nonce':nonce
+            }).encode('utf8')
+            status,_,check_raw=req('/wp-admin/admin-ajax.php',check)
+            assert status==200,'WordPress build status poll failed'
+            check_response=json.loads(check_raw)
+            info=check_response.get('data') or {}
+            if not check_response.get('success') or info.get('build_active'):
+              log('Another build remains active; refused duplicate dispatch.')
+              raise RuntimeError('A build is already running')
+            log('Reconciled prior completed build using the WordPress status endpoint.')
+
           payload=urllib.parse.urlencode({
             'action':'vcs_trigger_build',
             'nonce':nonce,
