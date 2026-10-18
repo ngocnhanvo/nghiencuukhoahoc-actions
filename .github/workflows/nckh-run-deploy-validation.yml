@@ -1,0 +1,23 @@
+name: NCKH Validate GitHub Trigger Workflow
+on:
+  issues:
+    types: [opened]
+permissions:
+  contents: read
+  actions: write
+  issues: write
+jobs:
+  dispatch:
+    if: github.repository == 'ngocnhanvo/nghiencuukhoahoc-actions' && github.event.issue.user.login == 'ngocnhanvo' && github.event.issue.title == '[nckh] Test official CI build'
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Dispatch production workflow in no-FTP dry-run mode
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh api -X POST "repos/${GITHUB_REPOSITORY}/actions/workflows/deploy-astro.yml/dispatches" \
+            -f ref=main -F 'inputs[deploy]=false' >/dev/null
+          gh api -X POST "repos/${GITHUB_REPOSITORY}/issues/${{ github.event.issue.number }}/comments" \
+            -f body='Triggered official deploy-astro.yml with deploy=false. This run only builds and validates Astro; it cannot upload to FTPS.' >/dev/null
