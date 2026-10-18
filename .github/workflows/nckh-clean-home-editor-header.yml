@@ -1,0 +1,109 @@
+name: NCKH homepage editor legacy header cleanup
+on:
+  issues:
+    types: [opened]
+permissions:
+  contents: read
+  issues: write
+jobs:
+  clean:
+    if: >-
+      github.repository == 'ngocnhanvo/nghiencuukhoahoc-actions'
+      && github.event.issue.user.login == 'ngocnhanvo'
+      && (github.event.issue.title == '[nckh] Inspect homepage editor header'
+        || github.event.issue.title == '[nckh] Clean homepage editor header')
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    env:
+      GH_TOKEN: ${{ github.token }}
+      WP_USER: ${{ secrets.WP_ADMIN_USERNAME }}
+      WP_PASS: ${{ secrets.WP_ADMIN_PASSWORD }}
+      TASK_TITLE: ${{ github.event.issue.title }}
+    steps:
+      - name: Inspect or carefully remove the single legacy header in WP page 248
+        shell: bash
+        run: |
+          set -euo pipefail
+          set +x
+          report="${RUNNER_TEMP}/nckh-editor-header-report.md"
+          python3 - "$report" <<'PY'
+          import sys,os,json,re,hashlib,urllib.request,urllib.parse,http.cookiejar,urllib.error,datetime
+          base='https://api-nghiencuukhoahoc.webnvn.com'
+          report=sys.argv[1]
+          clean=os.environ['TASK_TITLE']=='[nckh] Clean homepage editor header'
+          lines=['## NCKH WordPress homepage legacy header '+('cleanup' if clean else 'inspection'),'']
+          jar=http.cookiejar.CookieJar()
+          opener=urllib.request.build_opener(urllib.request.HTTPCookieProcessor(jar))
+          def request(path,data=None,headers=None):
+              req=urllib.request.Request(base+path,data=data,headers=headers or {})
+              with opener.open(req,timeout=32) as response:
+                  return response.status,response.geturl(),response.read()
+          def api(path,nonce,body=None):
+              headers={'X-WP-Nonce':nonce}
+              if body is not None:headers['Content-Type']='application/json; charset=utf-8'
+              _,_,data=request('/wp-json/wp/v2/'+path,json.dumps(body).encode('utf8') if body is not None else None,headers)
+              return json.loads(data)
+          try:
+              request('/wp-login.php')
+              _,url,_=request('/wp-login.php',urllib.parse.urlencode({
+                  'log':os.environ['WP_USER'],'pwd':os.environ['WP_PASS'],
+                  'wp-submit':'Log In','redirect_to':base+'/wp-admin/','testcookie':'1'
+              }).encode('utf8'))
+              assert url.startswith(base+'/wp-admin'),'WordPress login failed'
+              _,_,nr=request('/wp-admin/admin-ajax.php?action=rest-nonce')
+              nonce=nr.decode().strip()
+              assert re.fullmatch('[A-Za-z0-9]{10,16}',nonce),'REST nonce unavailable'
+              page=api('pages/248?context=edit',nonce)
+              assert page.get('acf',{}).get('key')=='home' and page.get('acf',{}).get('action')=='HomePage','Wrong WordPress page identity'
+              assert page.get('status')=='publish','Page not published; refused'
+              original=page.get('content',{}).get('raw')
+              assert isinstance(original,str),'Editable raw page content unavailable'
+              sha=lambda s:hashlib.sha256(s.encode('utf8')).hexdigest()[:16]
+              pattern=re.compile(r'<header\b(?=[^>]*\bclass\s*=\s*["\'][^"\']*\bnd-header\b[^"\']*["\'])[^>]*>[\s\S]*?</header\s*>',re.I)
+              found=list(pattern.finditer(original))
+              sections_before=len(re.findall(r'<section\b',original,re.I))
+              lines.append('- Page: ID 248, key=home, action=HomePage; editor content hash '+sha(original))
+              lines.append('- Legacy nd-header count: '+str(len(found)))
+              lines.append('- Existing content sections: '+str(sections_before))
+              lines.append('- Current page modified GMT: '+str(page.get('modified_gmt')))
+              autosaves=api('pages/248/autosaves?context=edit&per_page=10',nonce)
+              if not isinstance(autosaves,list):autosaves=[]
+              autosaves.sort(key=lambda x:x.get('modified_gmt',''),reverse=True)
+              newest=autosaves[0] if autosaves else None
+              changed_autosave=False
+              if newest:
+                  candidate=(newest.get('content') or {}).get('raw')
+                  changed_autosave=isinstance(candidate,str) and candidate!=original and (newest.get('modified_gmt','')>page.get('modified_gmt',''))
+                  lines.append('- Latest autosave modified GMT: '+str(newest.get('modified_gmt'))+'; newer and different: '+str(changed_autosave))
+                  if changed_autosave:
+                      lines.append('- Autosave content hash '+sha(candidate)+'; legacy header count '+str(len(pattern.findall(candidate))))
+              else:
+                  lines.append('- No autosave returned by WP REST')
+              if not clean:
+                  lines.append('- **Read-only inspection. No WP changes.**')
+              elif changed_autosave:
+                  lines.append('- **SAFETY STOP:** newer unsaved editor content exists; no WP update attempted.')
+                  lines.append('- Recover or discard the autosave in Classic Editor before retrying cleanup.')
+              elif not found:
+                  lines.append('- Already clean: no embedded nd-header in stored WordPress page. No update needed.')
+              else:
+                  assert len(found)==1,'Unexpected number of legacy headers; refused update'
+                  fresh=api('pages/248?context=edit',nonce)
+                  assert fresh.get('content',{}).get('raw')==original,'Page changed while checking; refused update'
+                  replacement=pattern.sub('',original,count=1)
+                  assert replacement!=original and len(re.findall(r'<section\b',replacement,re.I))==sections_before,'Unexpected section change; refused update'
+                  assert len(pattern.findall(replacement))==0,'Header not removed'
+                  updated=api('pages/248',nonce,{'content':replacement})
+                  assert updated.get('id')==248,'Update response incorrect'
+                  saved=api('pages/248?context=edit',nonce)
+                  assert saved.get('content',{}).get('raw')==replacement,'Readback differs from intended content'
+                  assert saved.get('acf',{}).get('key')=='home' and saved.get('acf',{}).get('action')=='HomePage','Page identity altered'
+                  lines.append('- **SUCCESS:** removed exactly one legacy header from WordPress page content.')
+                  lines.append('- Content hash after: '+sha(replacement)+'; sections remain '+str(sections_before))
+              with open(report,'w',encoding='utf8') as f:f.write('\n'.join(lines)+'\n')
+          except Exception as ex:
+              lines.append('- **ERROR:** '+type(ex).__name__+': '+str(ex)[:170])
+              with open(report,'w',encoding='utf8') as f:f.write('\n'.join(lines)+'\n')
+              raise
+          PY
+          gh api -X POST "repos/${GITHUB_REPOSITORY}/issues/${{ github.event.issue.number }}/comments" -F body=@"$report" >/dev/null
