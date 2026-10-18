@@ -1,0 +1,76 @@
+name: Verify NCKH Page Preview Backend
+on:
+  issues:
+    types: [opened]
+permissions:
+  contents: read
+  issues: write
+jobs:
+  inspect:
+    if: github.repository == 'ngocnhanvo/nghiencuukhoahoc-actions' && github.event.issue.user.login == 'ngocnhanvo' && github.event.issue.title == '[nckh] Verify per-page preview API'
+    runs-on: ubuntu-latest
+    timeout-minutes: 7
+    env:
+      GH_TOKEN: ${{ github.token }}
+      WP_USER: ${{ secrets.WP_ADMIN_USERNAME }}
+      WP_PASS: ${{ secrets.WP_ADMIN_PASSWORD }}
+      SOURCE_PAT: ${{ secrets.SOURCE_REPO_PAT }}
+    steps:
+      - name: Verify authenticated REST route and JS syntax (read-only)
+        shell: bash
+        run: |
+          set -euo pipefail
+          set +x
+          report="${RUNNER_TEMP}/verify.md"
+          printf '## NCKH ESC Table per-Page preview verification\n\n' > "$report"
+          finish() {
+            code=$?
+            printf '\nExit code: %s\n' "$code" >> "$report"
+            gh api -X POST "repos/${GITHUB_REPOSITORY}/issues/${{ github.event.issue.number }}/comments" -F body=@"$report" >/dev/null || true
+          }
+          trap finish EXIT
+          curl -fsSL --max-time 30 -H "Authorization: Bearer ${SOURCE_PAT}" \
+            -H 'Accept: application/vnd.github.raw+json' \
+            'https://api.github.com/repos/ngocnhanvo/nghiencuukhoahoc-php/contents/automation/tablepress/previews.mjs?ref=master' \
+            -o "${RUNNER_TEMP}/previews.mjs"
+          node --check "${RUNNER_TEMP}/previews.mjs"
+          echo 'Screenshot tool: **PASS** (Node syntax).' >> "$report"
+          python3 - "$report" <<'PY'
+          import sys,os,urllib.request,urllib.parse,urllib.error,http.cookiejar,json,re
+          report=sys.argv[1]
+          base='https://api-nghiencuukhoahoc.webnvn.com'
+          def add(s):
+            with open(report,'a',encoding='utf8') as f:f.write(s+'\n')
+          jar=http.cookiejar.CookieJar()
+          client=urllib.request.build_opener(urllib.request.HTTPCookieProcessor(jar))
+          def get(path,data=None,headers=None):
+            req=urllib.request.Request(base+path,data=data,headers=headers or {})
+            try:
+              with client.open(req,timeout=25) as res:return res.status,res.geturl(),res.read()
+            except urllib.error.HTTPError as err:
+              return err.code,err.geturl(),err.read()
+          status,url,index=get('/wp-json/')
+          assert status==200,'NCKH WP JSON index not available'
+          routes=json.loads(index).get('routes',{})
+          target='/nckh-tablepress/v1/preview'
+          assert target in routes,'NCKH-specific per-page preview REST route missing'
+          methods=routes[target].get('methods',[])
+          assert 'GET' in methods and 'POST' in methods,'REST GET/POST route methods incomplete'
+          add('Preview REST namespace: **'+target+'**, GET and POST registered.')
+          get('/wp-login.php')
+          status,url,_=get('/wp-login.php',urllib.parse.urlencode({
+            'log':os.environ['WP_USER'],'pwd':os.environ['WP_PASS'],
+            'wp-submit':'Log In','redirect_to':base+'/wp-admin/','testcookie':'1'
+          }).encode())
+          assert url.startswith(base+'/wp-admin/'),'Admin login failed'
+          status,_,nonce=get('/wp-admin/admin-ajax.php?action=rest-nonce')
+          nonce=nonce.decode().strip()
+          assert re.fullmatch('[a-zA-Z0-9]{10,16}',nonce),'REST nonce missing'
+          status,_,error=get('/wp-json/nckh-tablepress/v1/preview',
+            headers={'X-WP-Nonce':nonce})
+          assert status==400,'Expected authenticated 400 for missing table_id/page_id; got '+str(status)
+          parsed=json.loads(error)
+          assert parsed.get('code')=='invalid_preview_target','Unexpected REST validation response'
+          add('Authenticated administrator route smoke test: **PASS** (rejects invalid target with 400).')
+          add('No ESC Table or WordPress content was modified in this check.')
+          PY
