@@ -85,25 +85,26 @@ jobs:
           import urllib.error
           examined=0;archived=0;page=1;targets=[]
           legacy=re.compile('xuongmunonbaohiem|blue.?sea|mũ bảo hiểm|nón bảo hiểm|non bao hiem|mu bao hiem',re.I)
-          while examined<500:
+          while examined<100:
             try:
-              batch=get('posts?per_page=100&page='+str(page)+'&status=publish&context=edit')
+              batch=get('posts?per_page=25&page='+str(page)+'&status=publish&context=edit&_fields=id,slug,title,content,excerpt')
             except urllib.error.HTTPError as error:
               if error.code==400:break
               raise
             if not batch:break
             for post in batch:
               examined+=1
-              if examined>500:break
+              if examined>100:break
               text=' '.join(str(v) for v in (post.get('slug',''),
                 post.get('title',{}).get('raw',''),post.get('content',{}).get('raw',''),
                 post.get('excerpt',{}).get('raw','')))
               if legacy.search(text):targets.append(post['id'])
-            if len(batch)<100:break
+            if len(batch)<25:break
             page+=1
-          for post_id in targets:
+          for post_id in targets[:15]:
             update('posts',post_id)
             archived+=1
           log('Published posts reviewed: **'+str(examined)+'**. Set to draft: **'+str(archived)+'**.')
+          log('Matching posts in current sample: **'+str(len(targets))+'**; capped to 15 updates per run.')
           log('No permanent deletion; uploads/ESC Table/WooCommerce products untouched.')
           PY
