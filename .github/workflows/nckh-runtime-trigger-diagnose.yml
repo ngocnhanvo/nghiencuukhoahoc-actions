@@ -1,0 +1,115 @@
+name: NCKH Runtime GitHub Trigger Diagnosis
+on:
+  issues:
+    types: [opened]
+permissions:
+  contents: read
+  issues: write
+jobs:
+  audit:
+    if: github.repository == 'ngocnhanvo/nghiencuukhoahoc-actions' && github.event.issue.user.login == 'ngocnhanvo' && github.event.issue.title == '[nckh] Diagnose live Trigger runtime'
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    env:
+      GH_TOKEN: ${{ github.token }}
+      FTP_SERVER: ${{ secrets.FTP_SERVER }}
+      FTP_USERNAME: ${{ secrets.FTP_USERNAME }}
+      FTP_PASSWORD: ${{ secrets.FTP_PASSWORD }}
+      WP_USER: ${{ secrets.WP_ADMIN_USERNAME }}
+      WP_PASS: ${{ secrets.WP_ADMIN_PASSWORD }}
+    steps:
+      - name: Temporarily inspect WP runtime constants and remove audit code
+        shell: bash
+        run: |
+          set -euo pipefail
+          set +x
+          report="${RUNNER_TEMP}/audit.md"
+          printf '## NCKH live GitHub Trigger runtime values (administrator-only)\n\n' > "$report"
+          finish() {
+            rc=$?
+            printf '\nAudit exit status: %s\n' "$rc" >> "$report"
+            gh api -X POST "repos/${GITHUB_REPOSITORY}/issues/${{ github.event.issue.number }}/comments" -F body=@"$report" >/dev/null || true
+          }
+          trap finish EXIT
+          cat > "${RUNNER_TEMP}/nckh-trigger-runtime-audit.php" <<'PHP'
+          <?php
+          /** Temporary NCKH runtime audit; remove immediately after use. */
+          defined('ABSPATH') || exit;
+          add_action('rest_api_init', static function (): void {
+              register_rest_route('nckh-internal-audit/v1', '/trigger', array(
+                  'methods' => 'GET',
+                  'permission_callback' => static function (): bool { return current_user_can('manage_options'); },
+                  'callback' => static function () {
+                      return rest_ensure_response(array(
+                          'owner' => defined('VCS_GH_OWNER') ? VCS_GH_OWNER : '(undefined)',
+                          'repo' => defined('VCS_GH_REPO') ? VCS_GH_REPO : '(undefined)',
+                          'owner_match' => defined('VCS_GH_OWNER') && VCS_GH_OWNER === 'ngocnhanvo',
+                          'repo_match' => defined('VCS_GH_REPO') && VCS_GH_REPO === 'nghiencuukhoahoc-actions',
+                          'database_match' => defined('DB_NAME') && DB_NAME === 'nghiencuukhoahoc_181026',
+                          'site_url_value' => untrailingslashit(site_url()),
+                          'site_url_match' => untrailingslashit(site_url()) === 'https://api-nghiencuukhoahoc.webnvn.com',
+                          'wp_siteurl_option' => get_option('siteurl'),
+                          'info_domain' => function_exists('get_site_domain') ? get_site_domain() : '(undefined)',
+                          'wp_trigger_active' => in_array('github-trigger/vcs-build-trigger.php', (array) get_option('active_plugins', array()), true),
+                      ));
+                  },
+              ));
+          });
+          PHP
+          php -l "${RUNNER_TEMP}/nckh-trigger-runtime-audit.php" >> "$report"
+          python3 - "${RUNNER_TEMP}/nckh-trigger-runtime-audit.php" "$report" <<'PY'
+          import os,sys,io,ftplib,urllib.request,urllib.parse,http.cookiejar,re,json,hashlib
+          from urllib.parse import urlparse
+          filename=sys.argv[1];report=sys.argv[2]
+          content=open(filename,'rb').read()
+          base='https://api-nghiencuukhoahoc.webnvn.com'
+          ftpurl=os.environ['FTP_SERVER']
+          parsed=urlparse(ftpurl if '://' in ftpurl else 'ftps://'+ftpurl)
+          ftp=ftplib.FTP_TLS()
+          ftp.connect(parsed.hostname,parsed.port or 21,timeout=18)
+          ftp.login(os.environ['FTP_USERNAME'],os.environ['FTP_PASSWORD'])
+          ftp.prot_p()
+          ftp.cwd('/domains/api-nghiencuukhoahoc.webnvn.com/public_html')
+          config=io.BytesIO()
+          ftp.retrbinary('RETR wp-config.php',config.write)
+          assert b'nghiencuukhoahoc_181026' in config.getvalue(), 'Wrong database'
+          target='wp-content/mu-plugins/nckh-trigger-runtime-audit.php'
+          check=io.BytesIO()
+          try:
+              ftp.retrbinary('RETR '+target,check.write)
+              assert check.getvalue()==content,'Preexisting different audit code; refusing overwrite'
+          except ftplib.error_perm as e:
+              if not str(e).startswith('550'):raise
+              ftp.storbinary('STOR '+target,io.BytesIO(content))
+          try:
+              c=http.cookiejar.CookieJar()
+              client=urllib.request.build_opener(urllib.request.HTTPCookieProcessor(c))
+              def req(path,payload=None,headers=None):
+                  request=urllib.request.Request(base+path,data=payload,headers=headers or {})
+                  with client.open(request,timeout=28) as response:return response.status,response.geturl(),response.read()
+              req('/wp-login.php')
+              _,url,_=req('/wp-login.php',urllib.parse.urlencode({
+                  'log':os.environ['WP_USER'],'pwd':os.environ['WP_PASS'],
+                  'wp-submit':'Log In','redirect_to':base+'/wp-admin/','testcookie':'1'
+              }).encode())
+              assert url.startswith(base+'/wp-admin/'),'Administrator login failed'
+              _,_,nonce=req('/wp-admin/admin-ajax.php?action=rest-nonce')
+              token=nonce.decode().strip()
+              assert re.fullmatch('[A-Za-z0-9]{10,16}',token),'Invalid REST nonce'
+              status,_,raw=req('/wp-json/nckh-internal-audit/v1/trigger',headers={'X-WP-Nonce':token})
+              assert status==200,'Administrator audit route unavailable'
+              data=json.loads(raw)
+              with open(report,'a',encoding='utf8') as out:
+                  for key in ['owner','repo','owner_match','repo_match','database_match','site_url_value','site_url_match','wp_siteurl_option','info_domain','wp_trigger_active']:
+                      out.write('- '+key+': `'+str(data.get(key))+'`\n')
+                  out.write('No passwords, authentication tokens or data entries were read or changed.\n')
+          finally:
+              ftp.delete(target)
+              try:
+                  ftp.retrbinary('RETR '+target,lambda chunk:None)
+                  raise RuntimeError('Diagnostic PHP still present')
+              except ftplib.error_perm as e:
+                  if not str(e).startswith('550'):raise
+              ftp.quit()
+              with open(report,'a',encoding='utf8') as out:out.write('- Temporary mu-plugin: removed and verified absent.\n')
+          PY
