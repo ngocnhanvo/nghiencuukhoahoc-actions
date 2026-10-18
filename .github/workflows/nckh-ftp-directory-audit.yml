@@ -1,0 +1,87 @@
+name: NCKH FTP directory isolation audit
+on:
+  issues:
+    types: [opened]
+permissions:
+  contents: read
+  issues: write
+jobs:
+  ftp-audit:
+    if: github.repository == 'ngocnhanvo/nghiencuukhoahoc-actions' && github.event.issue.title == '[audit] NCKH FTP directory isolation' && github.event.issue.user.login == 'ngocnhanvo'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      GH_TOKEN: ${{ github.token }}
+      FTP_SERVER: ${{ secrets.FTP_SERVER }}
+      FTP_USERNAME: ${{ secrets.FTP_USERNAME }}
+      FTP_PASSWORD: ${{ secrets.FTP_PASSWORD }}
+    steps:
+      - name: List FTP roots using encrypted FTPS without changing files
+        shell: bash
+        run: |
+          set -uo pipefail
+          set +x
+          report="${RUNNER_TEMP}/ftp-isolation.md"
+          printf '## FTP directory isolation (read-only)\n\n' > "$report"
+          python3 - "$report" <<'PY'
+          import os,sys,ftplib,socket
+          from urllib.parse import urlparse
+          report=sys.argv[1]
+          raw=os.getenv("FTP_SERVER","").strip()
+          username=os.getenv("FTP_USERNAME","")
+          password=os.getenv("FTP_PASSWORD","")
+          targets=[
+            ("NCKH", "/domains/api-nghiencuukhoahoc.webnvn.com/public_html"),
+            ("Blue Sea", "/domains/admin.xuongmunonbaohiem.com/public_html")
+          ]
+          messages=[]
+          if not (raw and username and password):
+              messages.append("FTP secrets are missing. No connection attempted.")
+          else:
+              parsed=urlparse(raw if "://" in raw else "ftps://"+raw)
+              hostname=parsed.hostname
+              port=parsed.port or 21
+              if not hostname:
+                  messages.append("FTP server setting is invalid.")
+              else:
+                  conn=None
+                  try:
+                      conn=ftplib.FTP_TLS()
+                      conn.connect(hostname,port,timeout=13)
+                      conn.login(username,password)
+                      conn.prot_p()
+                      messages.append("Encrypted FTP login: successful.")
+                      for name,folder in targets:
+                          current=conn.pwd()
+                          found=False
+                          for candidate in [folder, folder.lstrip("/")]:
+                              try:
+                                  conn.cwd(candidate)
+                                  found=True
+                                  break
+                              except ftplib.all_errors:
+                                  pass
+                          if not found:
+                              messages.append(name+": folder not accessible with these FTP credentials.")
+                              continue
+                          try:
+                              entries=conn.nlst()
+                              basenames=[v.rstrip("/").split("/")[-1] for v in entries]
+                              haswp="wp-config.php" in basenames and "wp-content" in basenames
+                              messages.append(name+": directory readable; wp-config.php and wp-content found: "+str(haswp).lower()+".")
+                          except ftplib.all_errors:
+                              messages.append(name+": folder accessible but listing unavailable.")
+                          try: conn.cwd(current)
+                          except ftplib.all_errors: pass
+                  except (ftplib.all_errors,TimeoutError,OSError,socket.timeout) as err:
+                      messages.append("FTPS login/list failed; no insecure FTP fallback. Error class: "+type(err).__name__+".")
+                  finally:
+                      if conn:
+                          try: conn.quit()
+                          except Exception: pass
+          with open(report,"a",encoding="utf-8") as f:
+              for msg in messages:
+                  f.write("- "+msg+"\n")
+              f.write("\nFTP credentials and file contents were not displayed. No uploads, deletions, or configuration changes.\n")
+          PY
+          gh api -X POST "repos/${GITHUB_REPOSITORY}/issues/${{ github.event.issue.number }}/comments" -F body=@"$report" >/dev/null
