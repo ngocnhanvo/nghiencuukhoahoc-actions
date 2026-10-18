@@ -55,7 +55,7 @@ jobs:
           wp=io.BytesIO()
           ftp.retrbinary('RETR public_html/wp-config.php',wp.write)
           config=wp.getvalue().decode('utf8','replace')
-          assert re.search(r"define\s*\(\s*['\"]DB_NAME['\"]\s*,\s*['\"]nghiencuukhoahoc_181026['\"]",config),'Wrong DB target')
+          assert re.search(r"define\s*\(\s*['\"]DB_NAME['\"]\s*,\s*['\"]nghiencuukhoahoc_181026['\"]",config),'Wrong DB target'
           old=io.BytesIO()
           ftp.retrbinary('RETR '+target,old.write)
           before=old.getvalue()
