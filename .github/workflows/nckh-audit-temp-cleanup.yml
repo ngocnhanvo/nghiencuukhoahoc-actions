@@ -1,0 +1,54 @@
+name: NCKH temporary cleanup controller preflight
+on:
+  issues:
+    types: [opened]
+permissions:
+  contents: read
+  issues: write
+jobs:
+  verify:
+    if: github.repository == 'ngocnhanvo/nghiencuukhoahoc-actions' && github.event.issue.user.login == 'ngocnhanvo' && github.event.issue.title == '[nckh] Verify temporary PHP'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      GH_TOKEN: ${{ github.token }}
+      WP_USER: ${{ secrets.WP_ADMIN_USERNAME }}
+      WP_PASS: ${{ secrets.WP_ADMIN_PASSWORD }}
+    steps:
+      - name: Read administrator-only maintenance status without modifications
+        shell: bash
+        run: |
+          set -euo pipefail
+          set +x
+          report="${RUNNER_TEMP}/report.md"
+          python3 - "$report" <<'PY'
+          import os,sys,urllib.request,urllib.parse,http.cookiejar,json,re
+          base='https://api-nghiencuukhoahoc.webnvn.com'
+          out=sys.argv[1]
+          opener=urllib.request.build_opener(urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()))
+          def get(path,body=None,headers=None):
+            req=urllib.request.Request(base+path,data=body,headers=headers or {})
+            with opener.open(req,timeout=25) as res:return res.status,res.geturl(),res.read()
+          get('/wp-login.php')
+          code,url,_=get('/wp-login.php',body=urllib.parse.urlencode({
+            'log':os.environ['WP_USER'],'pwd':os.environ['WP_PASS'],'wp-submit':'Log In',
+            'redirect_to':base+'/wp-admin/','testcookie':'1'
+          }).encode())
+          assert url.startswith(base+'/wp-admin'),'Login failed'
+          _,_,nonce=get('/wp-admin/admin-ajax.php?action=rest-nonce')
+          nonce=nonce.decode().strip()
+          assert re.fullmatch('[a-zA-Z0-9]{10,16}',nonce),'REST nonce invalid'
+          code,_,content=get('/wp-json/nckh-maintenance/v1/cleanup',headers={'X-WP-Nonce':nonce})
+          assert code==200,'Temporary endpoint missing'
+          info=json.loads(content)
+          tables=info.get('table_ids',[])
+          assert isinstance(tables,list),'ESC Table inventory invalid'
+          with open(out,'w',encoding='utf8') as f:
+            f.write('## Temporary PHP cleanup preflight (read-only)\n\n')
+            f.write('- Authenticated WordPress NCKH: **YES**.\n')
+            f.write('- WordPress post tags: **'+str(info.get('tag_count'))+'**.\n')
+            f.write('- ESC Table count: **'+str(len(tables))+'**.\n')
+            f.write('- ESC Table IDs: `'+', '.join(str(v) for v in tables)+'`.\n')
+            f.write('- No data modified.\n')
+          PY
+          gh api -X POST "repos/${GITHUB_REPOSITORY}/issues/${{ github.event.issue.number }}/comments" -F body=@"$report" >/dev/null
