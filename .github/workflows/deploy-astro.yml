@@ -82,17 +82,25 @@ jobs:
           frontend=lines.get('WC_URL_CLIENT','').rstrip('/')
           assert wp=='https://api-nghiencuukhoahoc.webnvn.com','Wrong WordPress URL; build blocked'
           assert frontend in ('https://nghiencuukhoahoc.id.vn','https://nghiencuukhoahoc.webnvn.com'),'Wrong frontend URL; build blocked'
-          for key,value in lines.items():
-            if key in ('WC_URL','WC_URL_CLIENT','NODE_ENV','WOO_KEY','WOO_SECRET','cacheAll','cachePage','cacheTablePress','cacheProduct','cacheProductCategory','cacheMenu','cacheRedirect'):
-              if '\n' in value or '\r' in value:raise ValueError('Invalid newline in config')
-              with open(os.environ['GITHUB_ENV'],'a',encoding='utf8') as f:f.write(key+'='+value+'\n')
-          with open('.env','w',encoding='utf8') as f:f.write(raw+'\n')
+          # Initial NCKH homepage requires only public origins; never copy
+          # legacy WooCommerce credentials from ENV_FILE into build logs.
+          safe={
+            'WC_URL':wp,
+            'WC_URL_CLIENT':frontend,
+            'NCKH_HOMEPAGE_ONLY_BUILD':'true',
+            'cacheAll':'false',
+            'cachePage':'false',
+            'cacheProduct':'false',
+            'cacheProductCategory':'false',
+            'cacheTablePress':'false',
+            'cacheRedirect':'false',
+            'cacheMenu':'false',
+          }
+          with open('.env','w',encoding='utf8') as f:
+            for key,value in safe.items(): f.write(key+'='+value+'\\n')
           with open(os.environ['GITHUB_ENV'],'a',encoding='utf8') as f:
-            f.write('NCKH_HOMEPAGE_ONLY_BUILD=true\n')
-            f.write('NODE_ENV=production\n')
-            for name in ('cacheAll','cachePage','cacheProduct','cacheProductCategory','cacheTablePress','cacheRedirect','cacheMenu'):
-              f.write(name+'=false\n')
-          print('Environment verified for NCKH only (values hidden).')
+            for key,value in safe.items(): f.write(key+'='+value+'\\n')
+                    print('Environment verified for NCKH only (values hidden).')
           PY
 
       - name: Install and build Astro on GitHub runner
@@ -100,8 +108,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          pnpm install --frozen-lockfile
-          pnpm run build-git
+          NODE_ENV=development pnpm install --frozen-lockfile --prod=false
+          NODE_ENV=production pnpm run build-git
 
       - name: Gate deployment on built HTML, compiled assets and canonical SEO
         working-directory: source
