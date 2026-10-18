@@ -1,0 +1,81 @@
+name: NCKH Diagnose Live GitHub Trigger Guard
+on:
+  issues:
+    types: [opened]
+permissions:
+  contents: read
+  issues: write
+jobs:
+  inspect:
+    if: github.repository == 'ngocnhanvo/nghiencuukhoahoc-actions' && github.event.issue.user.login == 'ngocnhanvo' && github.event.issue.title == '[nckh] Diagnose live Trigger guard'
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    env:
+      GH_TOKEN: ${{ github.token }}
+      SOURCE_PAT: ${{ secrets.SOURCE_REPO_PAT }}
+      WP_USER: ${{ secrets.WP_ADMIN_USERNAME }}
+      WP_PASS: ${{ secrets.WP_ADMIN_PASSWORD }}
+      FTP_SERVER: ${{ secrets.FTP_SERVER }}
+      FTP_USERNAME: ${{ secrets.FTP_USERNAME }}
+      FTP_PASSWORD: ${{ secrets.FTP_PASSWORD }}
+    steps:
+      - name: Compare exact live WordPress plugin to NCKH repo and read safe constants
+        shell: bash
+        run: |
+          set -euo pipefail
+          set +x
+          report="${RUNNER_TEMP}/trigger-guard.md"
+          python3 - "$report" <<'PY'
+          import os,sys,io,re,hashlib,ftplib,json,urllib.request,urllib.parse,http.cookiejar
+          from urllib.parse import urlparse
+          report=sys.argv[1]
+          def log(s):
+            with open(report,'a',encoding='utf8') as f:f.write(s+'\n')
+          log('## Live NCKH GitHub Trigger guard diagnosis — read-only\n')
+          f=os.environ['FTP_SERVER']
+          parsed=urlparse(f if '://' in f else 'ftps://'+f)
+          ftp=ftplib.FTP_TLS()
+          ftp.connect(parsed.hostname,parsed.port or 21,timeout=17)
+          ftp.login(os.environ['FTP_USERNAME'],os.environ['FTP_PASSWORD']);ftp.prot_p()
+          ftp.cwd('/domains/api-nghiencuukhoahoc.webnvn.com/public_html')
+          def read(p):
+            out=io.BytesIO();ftp.retrbinary('RETR '+p,out.write);return out.getvalue()
+          cfg=read('wp-config.php').decode('utf8','replace')
+          assert re.search(r"define\s*\(\s*['\"]DB_NAME['\"]\s*,\s*['\"]nghiencuukhoahoc_181026['\"]",cfg),'Wrong DB'
+          live=read('wp-content/plugins/github-trigger/vcs-build-trigger.php')
+          ftp.quit()
+          gh=urllib.request.Request('https://api.github.com/repos/ngocnhanvo/nghiencuukhoahoc-php/contents/wp-content/plugins/github-trigger/vcs-build-trigger.php?ref=master',headers={
+             'Authorization':'Bearer '+os.environ['SOURCE_PAT'],
+             'Accept':'application/vnd.github.raw+json'})
+          with urllib.request.urlopen(gh,timeout=26) as response:upstream=response.read()
+          log('- NCKH database verified by exact name.')
+          log('- Live trigger file matches NCKH PHP `master`: **'+str(hashlib.sha256(live).digest()==hashlib.sha256(upstream).digest()).lower()+'**.')
+          log('- Live plugin has NCKH dispatch guard: **'+str(b'nghiencuukhoahoc-actions' in live).lower()+'**.')
+          def override(name):
+            pattern=r"define\s*\(\s*['\"]"+name+r"['\"]\s*,\s*['\"]([a-zA-Z0-9._-]+)['\"]"
+            m=re.search(pattern,cfg)
+            return m.group(1) if m else 'not a literal override'
+          log('- VCS_GH_OWNER in wp-config: `'+override('VCS_GH_OWNER')+'`.')
+          log('- VCS_GH_REPO in wp-config: `'+override('VCS_GH_REPO')+'`.')
+          # Token value NEVER reported or copied to report.
+          base='https://api-nghiencuukhoahoc.webnvn.com'
+          opener=urllib.request.build_opener(urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()))
+          def req(path,body=None,hdr=None):
+            request=urllib.request.Request(base+path,data=body,headers=hdr or {})
+            with opener.open(request,timeout=25) as res:return res.status,res.geturl(),res.read()
+          req('/wp-login.php')
+          _,dest,_=req('/wp-login.php',urllib.parse.urlencode({
+            'log':os.environ['WP_USER'],'pwd':os.environ['WP_PASS'],'wp-submit':'Log In',
+            'redirect_to':base+'/wp-admin/','testcookie':'1'
+          }).encode())
+          assert dest.startswith(base+'/wp-admin/'),'WP auth failed'
+          _,_,nonce=req('/wp-admin/admin-ajax.php?action=rest-nonce')
+          h={'X-WP-Nonce':nonce.decode().strip()}
+          _,_,raw=req('/wp-json/wp/v2/thong-tin-chung?context=edit&status=publish&per_page=20',hdr=h)
+          items=json.loads(raw)
+          for item in items:
+            acf=item.get('acf') or {}
+            log('- WP published common info #'+str(item.get('id'))+' domain: `'+str(acf.get('domain',''))[:120]+'`.')
+          log('No plugin, config, database or hosting contents changed.')
+          PY
+          gh api -X POST "repos/${GITHUB_REPOSITORY}/issues/${{ github.event.issue.number }}/comments" -F body=@"$report" >/dev/null
