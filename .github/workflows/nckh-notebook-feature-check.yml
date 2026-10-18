@@ -1,0 +1,62 @@
+name: NCKH notebook targeted Astro checks
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/nckh-notebook-feature-check.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  notebook:
+    if: github.repository == 'ngocnhanvo/nghiencuukhoahoc-actions'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout Astro development branch without deployment
+        uses: actions/checkout@v4
+        with:
+          repository: ngocnhanvo/nghiencuukhoahoc-astro
+          ref: github
+          path: source
+          token: ${{ secrets.SOURCE_REPO_PAT }}
+          persist-credentials: false
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Install dependencies (no scripts or builds)
+        working-directory: source
+        run: |
+          corepack enable
+          corepack prepare pnpm@9 --activate
+          pnpm install --frozen-lockfile --ignore-scripts
+      - name: Parse new Astro page and TypeScript client
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --input-type=module <<'JS'
+          import fs from 'node:fs';
+          import { transform } from '@astrojs/compiler';
+          import ts from 'typescript';
+          const name = 'src/pages/so-tay/index.astro';
+          const source = fs.readFileSync(name, 'utf8');
+          const compiled = await transform(source, { filename: name });
+          if (!compiled.code || compiled.errors?.length) throw Error('Astro page parse failed');
+          console.log('PASS: New Sổ tay Astro page compiles');
+          for (const file of ['src/lib/nckh/notebookClient.ts','src/lib/nckh/notebookClient.test.ts']) {
+            const result = ts.transpileModule(fs.readFileSync(file, 'utf8'), {
+              fileName: file, reportDiagnostics: true,
+              compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022 }
+            });
+            const errors = result.diagnostics?.filter(d => d.category === ts.DiagnosticCategory.Error) || [];
+            if (errors.length) throw new Error('TS syntax errors in '+file+': '+errors.map(x=>x.messageText).join('; '));
+            console.log('PASS: TypeScript syntax', file);
+          }
+          JS
+      - name: Run focused NCKH API client tests
+        working-directory: source
+        run: pnpm exec vitest run src/lib/nckh/notebookClient.test.ts
+      - name: Staging only assertion
+        run: echo "No FTP, no staging writes, no OAuth login, no Astro master merge."
