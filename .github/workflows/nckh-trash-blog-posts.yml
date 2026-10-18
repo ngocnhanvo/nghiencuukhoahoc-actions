@@ -87,7 +87,7 @@ jobs:
             for attempt in range(3):
               try:
                 result,_=request(url,method='DELETE',headers=auth)
-                return True,item['id']
+                return (isinstance(result,dict) and result.get('status')=='trash' and result.get('id')==item['id']),item['id']
               except urllib.error.HTTPError as e:
                 if e.code==404:return False,item['id']
                 if attempt==2 or e.code not in (429,500,502,503,504):return False,item['id']
