@@ -74,7 +74,12 @@ jobs:
           # in an isolated runner directory and point tsc there explicitly.
           mkdir -p "$RUNNER_TEMP/nckh-types"
           npm install --prefix "$RUNNER_TEMP/nckh-types" --no-audit --no-fund --no-save --ignore-scripts --package-lock=false @types/node@22
-          pnpm exec tsc --project tsconfig.nckh.json --pretty false --typeRoots "$RUNNER_TEMP/nckh-types/node_modules/@types"
+          # Do not override typeRoots: Astro's astro/client types also require
+          # normal package resolution. Link ephemeral Node types without changing
+          # package.json, pnpm lockfile or production source files.
+          mkdir -p node_modules/@types
+          ln -sfn "$RUNNER_TEMP/nckh-types/node_modules/@types/node" node_modules/@types/node
+          pnpm exec tsc --project tsconfig.nckh.json --pretty false
       - name: Run focused NCKH API client tests
         working-directory: source
         run: pnpm exec vitest run src/lib/nckh/notebookClient.test.ts src/lib/nckh/googleOidc.test.ts src/lib/nckh/serverWp.test.ts src/lib/nckh/serverSession.test.ts src/lib/nckh/researchProgress.test.ts src/lib/nckh/notebookExport.test.ts
