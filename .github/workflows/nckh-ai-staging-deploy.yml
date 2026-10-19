@@ -33,6 +33,7 @@ jobs:
           php -l source/wp-content/mu-plugins/nckh-ai-feedback.php
           php -l source/tests/nckh-ai-feedback.test.php
           php source/tests/nckh-ai-feedback.test.php
+          php source/tests/nckh-ai-feedback.test.php --esc
           php -l source/wp-content/mu-plugins/nckh-research-api.php
           php source/tests/nckh-research-api.test.php
       - name: Deploy only AI MU plugin to guarded WordPress staging, hash verify and rollback
