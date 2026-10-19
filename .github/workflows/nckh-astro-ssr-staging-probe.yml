@@ -5,11 +5,17 @@ on:
     paths:
       - '.github/workflows/nckh-astro-ssr-staging-probe.yml'
   workflow_dispatch:
+  issues:
+    types: [opened]
 permissions:
   contents: read
 jobs:
   probe:
-    if: github.repository == 'ngocnhanvo/nghiencuukhoahoc-actions'
+    if: >-
+      github.repository == 'ngocnhanvo/nghiencuukhoahoc-actions'
+      && (github.event_name != 'issues'
+          || (github.event.issue.user.login == 'ngocnhanvo'
+              && github.event.issue.title == '[nckh] Probe staging SSR now'))
     runs-on: ubuntu-latest
     timeout-minutes: 4
     steps:
