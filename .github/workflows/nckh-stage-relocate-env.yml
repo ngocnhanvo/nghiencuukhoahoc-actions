@@ -1,0 +1,82 @@
+name: NCKH Staging Relocate Legacy Env Outside Webroot
+on:
+  issues:
+    types: [opened]
+permissions:
+  contents: read
+concurrency:
+  group: nckh-staging-private-config-maintenance
+  cancel-in-progress: false
+jobs:
+  relocate:
+    if: >-
+      github.repository == 'ngocnhanvo/nghiencuukhoahoc-actions'
+      && github.event.issue.user.login == 'ngocnhanvo'
+      && github.event.issue.title == '[nckh] Move staging env outside public_html'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      FTP_SERVER: ${{ secrets.FTP_SERVER }}
+      FTP_USERNAME: ${{ secrets.FTP_USERNAME }}
+      FTP_PASSWORD: ${{ secrets.FTP_PASSWORD }}
+    steps:
+      - name: Move only legacy staging env into pre-existing owner-only private directory
+        shell: bash
+        run: |
+          set -euo pipefail
+          set +x
+          python3 - <<'PY'
+          import ftplib,os,urllib.request,urllib.error
+          from urllib.parse import urlparse
+          domain='/domains/nghiencuukhoahoc.webnvn.com'
+          root=domain+'/public_html'
+          private=domain+'/nckh-private-runtime'
+          src=root+'/.env'
+          dst=private+'/legacy-stage-site.env'
+          p=os.environ['FTP_SERVER'];parsed=urlparse(p if '://' in p else 'ftps://'+p)
+          ftp=ftplib.FTP_TLS()
+          ftp.connect(parsed.hostname,parsed.port or 21,timeout=25)
+          ftp.login(os.environ['FTP_USERNAME'],os.environ['FTP_PASSWORD'])
+          ftp.prot_p()
+          def ls(directory):
+              ftp.cwd(directory)
+              output=[]
+              ftp.retrlines('LIST',output.append)
+              return output
+          def names(directory):
+              return {line.split(None,8)[-1] for line in ls(directory) if len(line.split(None,8))==9}
+          moved=False
+          try:
+              original=names(root)
+              protected=names(private)
+              if '.env' not in original:raise RuntimeError('No staging root .env; not changing files')
+              if 'legacy-stage-site.env' in protected:raise RuntimeError('Destination already exists; refuse overwrite')
+              if 'oauth.json' not in protected:raise RuntimeError('Private staging secrets directory does not match expected host')
+              ftp.rename(src,dst)
+              moved=True
+              print('MOVED legacy .env from staging public root into existing private folder')
+              try:
+                  ftp.sendcmd('SITE CHMOD 600 '+dst)
+                  print('OWNER_ONLY_CHMOD requested: yes')
+              except ftplib.all_errors:
+                  print('OWNER_ONLY_CHMOD requested: hosting rejected, directory must remain 0700')
+              assert '.env' not in names(root)
+              assert 'legacy-stage-site.env' in names(private)
+              for line in ls(private):
+                  if line.endswith(' legacy-stage-site.env'):
+                      print('PRIVATE_FILE_OWNER_ONLY_MODE',line.startswith('-rw-------'))
+          finally:
+              ftp.quit()
+          def check(path):
+              req=urllib.request.Request('https://nghiencuukhoahoc.webnvn.com'+path,
+                  headers={'User-Agent':'NCKH-Stage-Env-Relocation-ReadOnly','Cache-Control':'no-cache'})
+              try:
+                  with urllib.request.urlopen(req,timeout=18) as r:return r.status
+              except urllib.error.HTTPError as e:
+                  e.close();return e.code
+          results={p:check(p) for p in ('/','/so-tay/','/api/auth/me','/.env')}
+          print('PUBLIC_AFTER_RELOCATION',results)
+          if results!={'/':200,'/so-tay/':200,'/api/auth/me':401,'/.env':404}:
+              raise RuntimeError('Runtime behavior changed after env relocation; investigate Node config now')
+          print('PASS staged public root .env relocated without disclosing values; SSR remains healthy')
+          PY
