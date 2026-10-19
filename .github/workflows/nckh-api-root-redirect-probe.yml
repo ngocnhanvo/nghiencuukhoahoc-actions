@@ -20,7 +20,7 @@ jobs:
           python3 - <<'PY'
           import subprocess,urllib.parse
           base='https://api-nghiencuukhoahoc.webnvn.com'
-          urls=['/','/admin','/admin/','/wp-admin/','/wp-login.php','/wp-json/']
+          urls=['/','/?rest_route=%2F','/admin','/admin/','/wp-admin/','/wp-login.php','/wp-json/']
           for path in urls:
               for repeat in range(1,4):
                   cmd=['curl','-sS','--http1.1','--max-time','18','-o','/dev/null','-D','-','-w',
