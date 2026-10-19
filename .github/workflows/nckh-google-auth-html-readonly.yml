@@ -1,0 +1,64 @@
+name: NCKH Live Google OAuth HTML Transition Read-Only Verification
+on:
+  issues:
+    types: [opened]
+permissions:
+  contents: read
+jobs:
+  test:
+    if: >-
+      github.repository == 'ngocnhanvo/nghiencuukhoahoc-actions'
+      && github.event.issue.user.login == 'ngocnhanvo'
+      && github.event.issue.title == '[nckh] Verify live Google OAuth cookie-safe navigation'
+    runs-on: ubuntu-latest
+    timeout-minutes: 4
+    steps:
+      - name: Assert stage OAuth HTML navigation without disclosing PKCE or cookies
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import urllib.request,urllib.error
+          base='https://nghiencuukhoahoc.webnvn.com'
+          class NoRedirect(urllib.request.HTTPRedirectHandler):
+              def redirect_request(self,*args,**kwargs):return None
+          op=urllib.request.build_opener(NoRedirect)
+          checks=[
+            ('/api/auth/me',401,None,False),
+            ('/api/auth/google/start',200,'https://accounts.google.com/o/oauth2/v2/auth',True),
+            ('/api/auth/google/callback?error=access_denied',200,'/so-tay?auth=failed',True),
+            ('/api/nckh/v1/projects',401,None,False),
+          ]
+          errors=0
+          for path,expected,marker,need_html in checks:
+              req=urllib.request.Request(base+path,method='GET',headers={
+                'Cache-Control':'no-cache','User-Agent':'NCKH-Live-OAuth-Meta-Refresh-ReadOnly/1',
+              })
+              try:
+                  with op.open(req,timeout=11) as r:
+                      status=r.status
+                      kind=r.headers.get('Content-Type','')
+                      cookie_set='Set-Cookie' in r.headers
+                      body=r.read(6000).decode('utf8','replace') if need_html else ''
+                      cache=r.headers.get('Cache-Control','')
+              except urllib.error.HTTPError as e:
+                  status=e.code
+                  kind=e.headers.get('Content-Type','')
+                  cookie_set='Set-Cookie' in e.headers
+                  body=''
+                  cache=e.headers.get('Cache-Control','')
+                  e.close()
+              except Exception as e:
+                  print('CHECK',path.split('?')[0],'ERROR',type(e).__name__)
+                  errors+=1
+                  continue
+              passed=status==expected
+              if need_html:
+                  # Marker checks run in runner memory. Never print Location/HTML,
+                  # query params, Set-Cookie, state, nonce, PKCE or the session key.
+                  passed=passed and 'text/html' in kind and 'no-store' in cache and bool(marker and marker in body) and 'http-equiv="refresh"' in body and cookie_set
+              print('CHECK',path.split('?')[0],'HTTP',status,'EXPECTED',expected,'PASS',passed)
+              if not passed:errors+=1
+          if errors:raise SystemExit('OAuth transition failed safety verification')
+          print('PASS real staged Google OAuth authorization and failed-callback browser transitions')
+          PY
