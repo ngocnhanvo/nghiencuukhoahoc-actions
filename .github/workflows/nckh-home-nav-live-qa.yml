@@ -1,0 +1,62 @@
+name: NCKH live homepage research menu links QA (GET only)
+on:
+  issues:
+    types: [opened]
+permissions:
+  contents: read
+jobs:
+  verify:
+    if: >-
+      github.repository == 'ngocnhanvo/nghiencuukhoahoc-actions'
+      && github.event.issue.user.login == 'ngocnhanvo'
+      && github.event.issue.title == '[nckh] QA live research navigation links'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check desktop mobile CTA and deep-link HTTP after clean FTP deployment
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import urllib.request,re,html
+          base='https://nghiencuukhoahoc.webnvn.com'
+          def get(path):
+              request=urllib.request.Request(base+path,headers={'User-Agent':'NCKH-Live-Nav-Only-QA/1.0','Cache-Control':'no-cache'})
+              with urllib.request.urlopen(request,timeout=20) as r:
+                  return r.status,r.read(450000).decode('utf8','replace')
+          status,body=get('/')
+          if status!=200:raise RuntimeError('Homepage not available')
+          nav=re.search(r'<nav\b[^>]*id="desktop-menu"[^>]*>(.*?)</nav>',body,re.S|re.I)
+          if not nav:raise RuntimeError('Missing desktop menu')
+          def text_only(s):return ' '.join(html.unescape(re.sub(r'<[^>]*>',' ',s)).split())
+          def anchors(segment):
+              out=[]
+              for match in re.finditer(r'<a\b([^>]*)>(.*?)</a>',segment,re.S|re.I):
+                  h=re.search(r'\bhref="([^"]+)"',match.group(1))
+                  if h:out.append((text_only(match.group(2)),html.unescape(h.group(1))))
+              return out
+          desktop=anchors(nav.group(1))
+          mobile_idx=body.find('id="mobile-menu-container"')
+          mobile=anchors(body[mobile_idx:mobile_idx+15000]) if mobile_idx>=0 else []
+          cta=re.search(r'<a\b[^>]*class="[^"]*research-header-cta[^"]*"[^>]*href="([^"]+)"|<a\b[^>]*href="([^"]+)"[^>]*class="[^"]*research-header-cta',body)
+          cta_url=html.unescape((cta.group(1) or cta.group(2))) if cta else None
+          expected={
+            'Sổ tay NCKH':'/so-tay',
+            'Giáo viên hướng dẫn':'/so-tay?tab=teachers',
+            'Đánh giá kỹ năng':'/so-tay?tab=skills',
+          }
+          print('DESKTOP',desktop)
+          print('MOBILE',mobile[:12])
+          print('CTA_HREF',cta_url)
+          for label,url in expected.items():
+              if (label,url) not in desktop:raise RuntimeError('Desktop missing '+label)
+              if (label,url) not in mobile:raise RuntimeError('Mobile missing '+label)
+          if cta_url!='/so-tay':raise RuntimeError('CTA not connected to real notebook')
+          if any(s in text_only(nav.group(1)).lower() for s in ['sản phẩm','nón bảo hiểm','dịch vụ','tin tức']):
+              raise RuntimeError('Legacy nav remained in desktop')
+          for path in ('/so-tay','/so-tay?tab=teachers','/so-tay?tab=skills'):
+              code,payload=get(path)
+              print('REAL_ROUTE',path,'HTTP',code,'has_workflow_ui',('tab-skills' in payload and 'tab-teachers' in payload))
+              if code!=200 or 'tab-skills' not in payload:raise RuntimeError('Real student/teacher workflow route missing')
+          print('PASS: responsive navigation and CTA use the real authenticated WordPress-backed EduResearch notebook')
+          PY
