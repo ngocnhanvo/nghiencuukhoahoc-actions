@@ -129,5 +129,7 @@
     39281906147,
     39281906151,
     39281906159
-  ]
+  ],
+  "cutoff_utc": "2026-10-19T16:12:48Z",
+  "purge_rule": "Only workflow runs with status completed and created_at <= cutoff_utc, excluding protected_run_ids, may be deleted."
 }
