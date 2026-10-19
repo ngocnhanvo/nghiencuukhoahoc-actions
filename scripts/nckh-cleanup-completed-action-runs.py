@@ -22,7 +22,7 @@ REPO = "ngocnhanvo/nghiencuukhoahoc-actions"
 API = "https://api.github.com/repos/" + REPO
 WORKFLOW = ".github/workflows/nckh-actions-history-cleanup.yml"
 SNAPSHOT = "docs/nckh-protected-action-runs-2026-10-19.json"
-TOKEN = os.environ.get("NCKH_CLEANUP_PAT", "") or os.environ.get("GITHUB_TOKEN", "")
+TOKEN = os.environ.get("GITHUB_TOKEN", "")
 MAX_SECONDS = 18400
 MAX_DELETE = 12000
 NON_FINAL = ("queued", "in_progress", "waiting", "requested", "pending")
@@ -127,26 +127,12 @@ def still_completed(run_id: int, cutoff: str, protected: set[int]) -> bool:
 
 
 def retire_temporary_schedule() -> None:
-    """Keep manual workflow available, remove automatic cleanup once finished."""
-    branch = request("GET", "/repos/" + REPO + "/branches/main")
-    if branch.get("name") != "main":
-        fail("STOP: branch changed before cleanup config write")
-    uri = "/repos/" + REPO + "/contents/" + WORKFLOW
-    info = request("GET", uri + "?ref=main")
-    source = base64.b64decode(info["content"]).decode("utf-8")
-    old = "  schedule:\n    - cron: '23 */6 * * *'\n"
-    if old not in source:
-        print("Cleanup schedule already disabled; no repository change", flush=True)
-        return
-    updated = source.replace(old, "")
-    request("PUT", uri, {
-        "message": "chore(nckh): stop temporary Actions history cleanup schedule",
-        "branch": "main",
-        "sha": info["sha"],
-        "content": base64.b64encode(updated.encode()).decode(),
-    })
-    print("PASS: temporary schedule disabled, manual workflow retained", flush=True)
-
+    """Disable the temporary cleanup workflow via Actions:write, no repo commits."""
+    request(
+        "PUT",
+        "/repos/" + REPO + "/actions/workflows/nckh-actions-history-cleanup.yml/disable",
+    )
+    print("PASS: temporary cleanup workflow disabled after finishing", flush=True)
 
 def main() -> None:
     if os.environ.get("GITHUB_REF") != "refs/heads/main":
