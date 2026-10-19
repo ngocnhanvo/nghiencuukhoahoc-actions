@@ -1,0 +1,43 @@
+name: NCKH Google auth prefix route isolation (read only)
+on:
+  issues:
+    types: [opened]
+permissions:
+  contents: read
+jobs:
+  route:
+    if: >-
+      github.repository == 'ngocnhanvo/nghiencuukhoahoc-actions'
+      && github.event.issue.user.login == 'ngocnhanvo'
+      && github.event.issue.title == '[nckh] Isolate Google route timeout'
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Compare staged Google prefix and non-Google handlers without redirects
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import time,urllib.request,urllib.error
+          base='https://nghiencuukhoahoc.webnvn.com'
+          class NoRedirect(urllib.request.HTTPRedirectHandler):
+              def redirect_request(self,*args,**kwargs):return None
+          opener=urllib.request.build_opener(NoRedirect)
+          # Unknown URLs require no authentication, secrets or OAuth transactions.
+          for path in ('/api/auth/logout','/api/auth/google/nonexistent-sentinel','/api/auth/google/','/api/does-not-exist-nckh'):
+              t=time.monotonic()
+              req=urllib.request.Request(base+path,method='GET',headers={'User-Agent':'NCKH-Google-Prefix-Route-Isolation/1.0','Cache-Control':'no-cache'})
+              try:
+                  with opener.open(req,timeout=7) as r:
+                      status=r.status
+                      kind=r.headers.get('Content-Type','').split(';')[0]
+              except urllib.error.HTTPError as e:
+                  status=e.code
+                  kind=e.headers.get('Content-Type','').split(';')[0]
+                  e.close()
+              except Exception as e:
+                  print('ROUTE',path,'ERROR',type(e).__name__,'elapsed_s',round(time.monotonic()-t,2))
+                  continue
+              print('ROUTE',path,'HTTP',status,'type',kind,'elapsed_s',round(time.monotonic()-t,2))
+          print('GET-only; no redirects followed; no cookies, tokens or production access.')
+          PY
