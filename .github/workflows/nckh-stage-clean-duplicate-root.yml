@@ -54,7 +54,9 @@ jobs:
                   kind=parts[0][0]
                   name=parts[-1]
                   if name in ('.','..'):continue
-                  if name in out or name.startswith('.') or not re.fullmatch(r'[^\x00-\x1f/\\]{1,255}',name):
+                  # Protect existing owner/root dotfiles without ever including them
+                  # in the fixed deletion allowlist; reject dotfiles inside copied trees.
+                  if name in out or (name.startswith('.') and directory not in (ROOT,ROOT+'/client')) or not re.fullmatch(r'[^\x00-\x1f/\\]{1,255}',name):
                       raise RuntimeError('Unsafe or hidden duplicate candidate FTP entry')
                   if kind not in ('-','d'):raise RuntimeError('Unexpected symlink or special file')
                   out[name]=(kind,int(parts[4]))
