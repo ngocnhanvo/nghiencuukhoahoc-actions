@@ -1,0 +1,118 @@
+name: NCKH WordPress Header Navigation Replace Legacy Menu
+on:
+  issues:
+    types: [opened]
+permissions:
+  contents: read
+jobs:
+  replace:
+    if: >-
+      github.repository == 'ngocnhanvo/nghiencuukhoahoc-actions'
+      && github.event.issue.user.login == 'ngocnhanvo'
+      && github.event.issue.title == '[nckh] Replace old header with real research navigation'
+    runs-on: ubuntu-latest
+    timeout-minutes: 9
+    env:
+      WP_USER: ${{ secrets.WP_ADMIN_USERNAME }}
+      WP_PASS: ${{ secrets.WP_ADMIN_PASSWORD }}
+    steps:
+      - name: Replace ONLY WordPress Header vi menu 1687 using authenticated REST
+        shell: bash
+        run: |
+          set -euo pipefail
+          set +x
+          python3 - <<'PY'
+          import urllib.request,urllib.error,urllib.parse,http.cookiejar,json,re,os
+          base='https://api-nghiencuukhoahoc.webnvn.com'
+          MENU_ID=1687
+          desired=[
+            ('Trang chủ','Trang chủ','/'),
+            ('Về chúng tôi','Giới thiệu','/#gioi-thieu'),
+            ('Sản phẩm','Sổ tay NCKH','/so-tay'),
+            ('Dịch vụ','Giáo viên hướng dẫn','/so-tay?tab=teachers'),
+            ('Tin tức','Đánh giá kỹ năng','/so-tay?tab=skills'),
+            ('Liên hệ','Khám phá nền tảng','/so-tay'),
+          ]
+          jar=http.cookiejar.CookieJar()
+          client=urllib.request.build_opener(urllib.request.HTTPCookieProcessor(jar))
+          def req(path,method='GET',body=None,nonce=None):
+              headers={'Accept':'application/json','User-Agent':'NCKH-Menu-Controlled-Change/1'}
+              data=None
+              if body is not None:
+                  data=json.dumps(body,ensure_ascii=False).encode('utf8')
+                  headers['Content-Type']='application/json'
+              if nonce:headers['X-WP-Nonce']=nonce
+              request=urllib.request.Request(base+path,data=data,headers=headers,method=method)
+              try:
+                  with client.open(request,timeout=25) as r:
+                      return r.status,json.loads(r.read(500000))
+              except urllib.error.HTTPError as e:
+                  # Never log raw WordPress output, credentials or auth cookies.
+                  code=e.code;e.close()
+                  raise RuntimeError('WP API '+path.split('?')[0]+' HTTP '+str(code))
+          def plain(path,data=None):
+              request=urllib.request.Request(base+path,data=data,headers={'User-Agent':'NCKH-Menu-Controlled-Change/1'})
+              with client.open(request,timeout=25) as r:return r.geturl(),r.read(50000)
+          plain('/wp-login.php')
+          redirect,_=plain('/wp-login.php',urllib.parse.urlencode({
+            'log':os.environ['WP_USER'],'pwd':os.environ['WP_PASS'],
+            'wp-submit':'Log In','redirect_to':base+'/wp-admin/','testcookie':'1'}).encode())
+          if not redirect.startswith(base+'/wp-admin'):raise RuntimeError('Admin login failed')
+          _,n=plain('/wp-admin/admin-ajax.php?action=rest-nonce')
+          nonce=n.decode().strip()
+          if not re.fullmatch('[A-Za-z0-9]{10,16}',nonce):raise RuntimeError('Invalid WP nonce')
+          status,m=req('/wp-json/wp/v2/menus/1687?context=edit',nonce=nonce)
+          if status!=200 or m.get('name')!='MenuTop':raise RuntimeError('Refuse wrong WordPress menu')
+          _,before=req('/wp-json/wp/v2/menu-items?menus=1687&per_page=100&context=edit',nonce=nonce)
+          if not isinstance(before,list):raise RuntimeError('Invalid menu items')
+          get_title=lambda i: (i.get('title',{}).get('raw','') if isinstance(i.get('title'),dict) else i.get('title',''))
+          roots=[x for x in before if x.get('parent')==0]
+          old_children=[x for x in before if x.get('parent')!=0]
+          if len(roots)!=6 or len(before)!=22 or set(get_title(x) for x in roots)!=set(x[0] for x in desired):
+              # Allow safe idempotent retry if a previous run already succeeded.
+              if len(roots)==6 and len(before)==6 and [get_title(x) for x in sorted(roots,key=lambda i:i.get('menu_order',0))]==[x[1] for x in desired]:
+                  print('WordPress header menu already migrated; no writes needed')
+                  raise SystemExit(0)
+              raise RuntimeError('Unexpected current menu shape; refuse all writes')
+          original={x['id']:x for x in roots}
+          plan=[(next(x for x in roots if get_title(x)==old),title,url) for old,title,url in desired]
+          print('PREFLIGHT menu',MENU_ID,'root_count',len(roots),'legacy_submenus',len(old_children))
+          # Disable legacy submenus by deleting them deepest-first. Fail closed on stale menu.
+          # WordPress native menu REST handles subtree references; do not guess user roles/DB.
+          def depth(item):
+              seen=set();level=0;parent=item.get('parent',0)
+              mapping={x['id']:x for x in old_children}
+              while parent in mapping and parent not in seen:
+                  seen.add(parent);parent=mapping[parent].get('parent',0);level+=1
+              return level
+          removed=0
+          for item in sorted(old_children,key=depth,reverse=True):
+              req('/wp-json/wp/v2/menu-items/'+str(item['id'])+'?force=true',method='DELETE',nonce=nonce)
+              removed+=1
+          print('REMOVED legacy-only submenu items',removed)
+          for order,(item,title,url) in enumerate(plan,1):
+              status,out=req('/wp-json/wp/v2/menu-items/'+str(item['id']),method='POST',
+                  body={'title':title,'url':url,'parent':0,'menu_order':order},nonce=nonce)
+              if status!=200 or out.get('id')!=item['id']:raise RuntimeError('Menu write verification failed')
+          _,after=req('/wp-json/wp/v2/menu-items?menus=1687&per_page=100&context=edit',nonce=nonce)
+          if len(after)!=6 or any(x.get('parent')!=0 for x in after):
+              raise RuntimeError('Menu after-write count incorrect')
+          resulting=sorted(after,key=lambda i:i.get('menu_order',0))
+          if [(get_title(x),x.get('url')) for x in resulting]!=[(d[1],d[2]) for d in desired]:
+              raise RuntimeError('WordPress after-write menu labels or URLs mismatched')
+          _,public=req('/wp-json/esc-api/v1/menus')
+          header=public.get('menus',{}).get('Header',{}).get('vi',{})
+          menu_nodes=header.get('items',[])
+          if header.get('id')!=1687 or len(menu_nodes)!=6:
+              raise RuntimeError('Public WordPress menu not updated')
+          labels=[x.get('label') for x in menu_nodes]
+          if labels!=[x[1] for x in desired]:
+              raise RuntimeError('Public Header labels mismatch')
+          for i,x in enumerate(menu_nodes):
+              if x.get('children'):raise RuntimeError('Legacy submenu still visible')
+              if i>=2 and 'so-tay' not in (str(x.get('href',''))+str(x.get('slug',''))):
+                  raise RuntimeError('Missing live notebook URL')
+          print('SUCCESS WordPress-managed Header vi now contains ONLY research app navigation and safe notebook links.')
+          print('Labels:',labels)
+          print('Legacy pages, blog posts, menus in other languages, and actual WordPress NCKH DB were not modified.')
+          PY
