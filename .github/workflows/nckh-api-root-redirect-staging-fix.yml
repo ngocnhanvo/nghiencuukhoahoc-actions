@@ -74,7 +74,7 @@ jobs:
           live_ht=get(target_ht)
           # No stale-source overwrites. In particular, preserve all live non-WP .htaccess config.
           if live_php not in (old_php,new_php):
-              raise RuntimeError('Live theme does not match expected original/current commit. Refusing overwrite.')
+              print('INFO: live WordPress theme has separately maintained changes; SKIPPING theme overwrite.')
           if b'# BEGIN WordPress' not in live_ht or b'# END WordPress' not in live_ht:
               raise RuntimeError('Live WordPress .htaccess markers absent; refusing overwrite.')
           if b'NCKH API root fast redirect' in live_ht:
@@ -84,7 +84,8 @@ jobs:
           else:
               # Preserve every existing live rule, prepend an independent staging-only redirect.
               new_ht=patch+live_ht
-          operations=[('page-index',target_php,live_php,new_php),('htaccess',target_ht,live_ht,new_ht)]
+          # Only install the independent Apache rule; never replace a diverged live theme.
+          operations=[('htaccess',target_ht,live_ht,new_ht)]
           changed=[x for x in operations if x[2]!=x[3]]
           suffix=str(int(time.time()))
           prepared=[]
@@ -105,6 +106,19 @@ jobs:
                   moved[-1][1]=True
                   if sha(get(target))!=sha(new):raise RuntimeError('Installed checksum mismatch for '+label)
                   print('PASS installed:',label,'on api-nghiencuukhoahoc.webnvn.com ONLY')
+              # Verify inside rollback-protected transaction, BEFORE closing FTPS.
+              if changed:
+                  import subprocess
+                  probe=subprocess.run(
+                      ['curl','-sS','-D','-','-o','/dev/null','--max-time','25','-w','\\nHTTP_CODE=%{http_code}\\n',
+                       'https://api-nghiencuukhoahoc.webnvn.com/'],
+                      capture_output=True,text=True,timeout=30
+                  )
+                  headers=probe.stdout.lower()
+                  if (probe.returncode or 'http_code=302' not in headers or
+                      'location: https://api-nghiencuukhoahoc.webnvn.com/wp-admin/' not in headers or
+                      'x-redirect-by: wordpress' in headers):
+                      raise RuntimeError('Fast Apache redirect did not work: rolled back automatically.')
               if not changed:print('PASS: Existing live files already match, no duplicate upload.')
           except Exception:
               for item,installed in reversed(moved):
