@@ -1,0 +1,45 @@
+name: NCKH Staging New Auth Routes Read Only
+on:
+  issues:
+    types: [opened]
+permissions:
+  contents: read
+jobs:
+  check:
+    if: >-
+      github.repository == 'ngocnhanvo/nghiencuukhoahoc-actions'
+      && github.event.issue.user.login == 'ngocnhanvo'
+      && github.event.issue.title == '[nckh] Probe new staging auth routes'
+    runs-on: ubuntu-latest
+    timeout-minutes: 4
+    steps:
+      - name: GET-only staging route response/status diagnostics
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import urllib.request,urllib.error,json
+          base='https://nghiencuukhoahoc.webnvn.com'
+          class NoRedirect(urllib.request.HTTPRedirectHandler):
+              def redirect_request(self,*args,**kwargs):return None
+          opener=urllib.request.build_opener(NoRedirect)
+          for path in ['/api/auth/me','/api/auth/google/start','/api/nckh/v1/projects','/so-tay']:
+              request=urllib.request.Request(base+path,headers={
+                  'User-Agent':'NCKH-ReadOnly-Stage-Route-Check/1.0',
+                  'Cache-Control':'no-cache',
+                  'Accept':'application/json' if path.startswith('/api/') else 'text/html',
+              },method='GET')
+              try:
+                  with opener.open(request,timeout=22) as response:
+                      status=response.status
+                      ctype=response.headers.get('Content-Type','')
+                      content=response.read(250)
+              except urllib.error.HTTPError as e:
+                  status=e.code
+                  ctype=e.headers.get('Content-Type','')
+                  content=e.read(250)
+              preview=content.decode('utf-8','replace')[:140]
+              if path.startswith('/api/auth/google') and status in (301,302,303):
+                  preview='OAuth authorization redirect (location not logged)'
+              print(path,'status=',status,'type=',ctype.split(';')[0],'preview=',preview.replace('\n',' ')[:140])
+          PY
