@@ -1,0 +1,39 @@
+name: NCKH homepage WordPress call to action audit (read-only)
+on:
+  issues:
+    types: [opened]
+permissions:
+  contents: read
+jobs:
+  inspect:
+    if: >-
+      github.repository == 'ngocnhanvo/nghiencuukhoahoc-actions'
+      && github.event.issue.user.login == 'ngocnhanvo'
+      && github.event.issue.title == '[nckh] Inspect homepage calls to action'
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Inspect public Page 248 homepage links without authentication
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import urllib.request,json,re,html
+          base='https://api-nghiencuukhoahoc.webnvn.com/wp-json/wp/v2/pages/248'
+          req=urllib.request.Request(base,headers={'User-Agent':'NCKH-Homepage-CTA-Audit/1'})
+          with urllib.request.urlopen(req,timeout=20) as r:
+              data=json.load(r)
+              body=data.get('content',{}).get('rendered','')
+          if not isinstance(body,str):raise RuntimeError('No WP homepage')
+          print('PAGE_ID',data.get('id'),'slug',data.get('slug'),'rendered_bytes',len(body))
+          tags=re.findall(r'<a\b[^>]*>.*?</a\s*>',body,re.S|re.I)
+          found=[]
+          for tag in tags:
+              href=re.search(r'\bhref\s*=\s*["\\x27]([^"\\x27]+)["\\x27]',tag,re.I)
+              label=' '.join(html.unescape(re.sub(r'<[^>]+>',' ',tag)).split())
+              if not href:continue
+              dest=html.unescape(href.group(1))
+              if any(s in label.lower() for s in ('bắt đầu','khám phá','sổ tay','thử ngay','đăng nhập','giáo viên','kỹ năng','trải nghiệm')):
+                  found.append((label[:100],dest[:220]))
+          print('HOMEPAGE_CTA_LINKS',found[:25])
+          PY
