@@ -51,16 +51,21 @@ jobs:
           if not home_src:raise RuntimeError('Homepage brand image src missing')
           home_logo=html.unescape(home_src.group(1))
           print('PUBLIC_HOME_LOGO_SRC',home_logo)
-          if logo and not logo.startswith(wp+'/wp-content/uploads/'):
-              raise RuntimeError('WordPress public brand logo host/path unsafe')
-          expected_logo=logo or home_logo
-          if expected_logo.startswith('/') and expected_logo!='/' and not expected_logo.startswith('//'):
-              image_url=homepage+expected_logo
-          else:
+          if logo:
+              expected_logo=urllib.parse.urljoin(wp+'/',logo)
+              parsed=urllib.parse.urlparse(expected_logo)
+              if parsed.scheme!='https' or parsed.hostname!=urllib.parse.urlparse(wp).hostname or not parsed.path.startswith('/wp-content/uploads/'):
+                  raise RuntimeError('Unsafe logo origin/path')
               image_url=expected_logo
-          if not image_url.startswith(('https://'+urllib.parse.urlparse(homepage).hostname+'/',wp+'/')):
-              raise RuntimeError('Unexpected public logo URL origin')
-          print('WORDPRESS_MEDIA_FIELD_POPULATED',bool(logo),'SHARED_IMAGE_MATCH_TARGET',True)
+              # Astro has converted this original WordPress JPG into homepage WebP.
+              # Both must refer to the same published image stem.
+              source_stem=urllib.parse.unquote(parsed.path.rsplit('/',1)[-1]).rsplit('.',1)[0]
+              home_stem=home_logo.rsplit('/',1)[-1].rsplit('.',1)[0].replace('-640w','')
+              if source_stem!=home_stem:raise RuntimeError('Homepage and published WP logo do not refer to the same file')
+          else:
+              expected_logo=home_logo
+              image_url=homepage+home_logo
+          print('WORDPRESS_MEDIA_FIELD_POPULATED',bool(logo),'SAME_PUBLISHED_IMAGE',True)
           for path in ('/so-tay','/xem-truoc'):
               text=get(homepage+path)[0].decode('utf8','replace')
               anchor=re.search(r'<a\b(?=[^>]*\bclass="[^"]*nckh-app-brand)[^>]*>(.*?)</a>',text,re.S|re.I)
