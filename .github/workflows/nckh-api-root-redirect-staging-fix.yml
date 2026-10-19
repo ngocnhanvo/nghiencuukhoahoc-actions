@@ -1,0 +1,152 @@
+name: NCKH API homepage redirect optimization — scoped staging
+on:
+  issues:
+    types: [opened]
+permissions:
+  contents: read
+jobs:
+  optimize:
+    if: >-
+      github.repository == 'ngocnhanvo/nghiencuukhoahoc-actions'
+      && github.event.issue.user.login == 'ngocnhanvo'
+      && github.event.issue.title == '[nckh] Optimize API root on webnvn staging'
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    env:
+      FTP_SERVER: ${{ secrets.FTP_SERVER }}
+      FTP_USERNAME: ${{ secrets.FTP_USERNAME }}
+      FTP_PASSWORD: ${{ secrets.FTP_PASSWORD }}
+    steps:
+      - name: Checkout exact EduResearch PHP source and backup parent commit
+        uses: actions/checkout@v4
+        with:
+          repository: ngocnhanvo/nghiencuukhoahoc-php
+          ref: master
+          path: source
+          fetch-depth: 4
+          token: ${{ secrets.SOURCE_REPO_PAT }}
+          persist-credentials: false
+      - name: Verify source, hostname guard, and syntax
+        shell: bash
+        run: |
+          set -euo pipefail
+          [ "$(git -C source rev-parse HEAD)" = "0e3a029235d42f18b112006302d943d5ac6d2553" ] || { echo 'Unexpected PHP source commit; refusing deployment.'; exit 1; }
+          php -l source/wp-content/themes/vibe-code-theme/inc/page/index.php
+          grep -q "wp_safe_redirect(admin_url(), 302);" source/wp-content/themes/vibe-code-theme/inc/page/index.php
+          grep -q "NCKH API root fast redirect" source/.htaccess
+          grep -q 'RewriteCond %{QUERY_STRING} \^\$' source/.htaccess
+          echo "PASS: strict source guard and PHP syntax."
+      - name: Apply exactly two files to official webnvn API with reversible FTP staging
+        shell: bash
+        run: |
+          set -euo pipefail
+          set +x
+          python3 - <<'PY'
+          import ftplib, hashlib, io, os, subprocess, time
+          from urllib.parse import urlparse
+          root='source'
+          php_rel='wp-content/themes/vibe-code-theme/inc/page/index.php'
+          target_php='public_html/'+php_rel
+          target_ht='public_html/.htaccess'
+          new_php=open(root+'/'+php_rel,'rb').read()
+          old_php=subprocess.check_output(['git','-C',root,'show','HEAD~2:'+php_rel])
+          assert b"site_url( '/admin' )" in old_php and b'wp_safe_redirect(admin_url(), 302)' in new_php
+          patch=open(root+'/.htaccess','rb').read().split(b'# BEGIN WordPress',1)[0]
+          assert b'RewriteCond %{QUERY_STRING} ^$' in patch
+          assert b'api-nghiencuukhoahoc.webnvn.com/wp-admin/' in patch
+          parsed=urlparse(os.environ['FTP_SERVER'] if '://' in os.environ['FTP_SERVER'] else 'ftps://'+os.environ['FTP_SERVER'])
+          ftp=ftplib.FTP_TLS()
+          ftp.connect(parsed.hostname,parsed.port or 21,timeout=30)
+          ftp.login(os.environ['FTP_USERNAME'],os.environ['FTP_PASSWORD'])
+          ftp.prot_p()
+          ftp.cwd('/domains/api-nghiencuukhoahoc.webnvn.com')
+          if not ftp.pwd().endswith('/domains/api-nghiencuukhoahoc.webnvn.com'):
+              raise RuntimeError('FTPS host scope mismatch; no changes allowed')
+          backup_dir='nckh-config-backups'
+          try:ftp.mkd(backup_dir)
+          except ftplib.error_perm as e:
+              if not str(e).startswith('550'):raise
+          def get(path):
+              buf=io.BytesIO()
+              ftp.retrbinary('RETR '+path,buf.write)
+              return buf.getvalue()
+          live_php=get(target_php)
+          live_ht=get(target_ht)
+          # No stale-source overwrites. In particular, preserve all live non-WP .htaccess config.
+          if live_php not in (old_php,new_php):
+              raise RuntimeError('Live theme does not match expected original/current commit. Refusing overwrite.')
+          if b'# BEGIN WordPress' not in live_ht or b'# END WordPress' not in live_ht:
+              raise RuntimeError('Live WordPress .htaccess markers absent; refusing overwrite.')
+          if b'NCKH API root fast redirect' in live_ht:
+              if not live_ht.startswith(patch):
+                  raise RuntimeError('Another root redirect was already installed; refusing overwrite.')
+              new_ht=live_ht
+          else:
+              # Preserve every existing live rule, prepend an independent staging-only redirect.
+              new_ht=patch+live_ht
+          operations=[('page-index',target_php,live_php,new_php),('htaccess',target_ht,live_ht,new_ht)]
+          changed=[x for x in operations if x[2]!=x[3]]
+          suffix=str(int(time.time()))
+          prepared=[]
+          moved=[]
+          def sha(v):return hashlib.sha256(v).digest()
+          try:
+              for label,target,old,new in changed:
+                  staged=backup_dir+'/rootfix-'+label+'-stage-'+suffix+'.txt'
+                  previous=backup_dir+'/rootfix-'+label+'-previous-'+suffix+'.txt'
+                  ftp.storbinary('STOR '+staged,io.BytesIO(new))
+                  if sha(get(staged))!=sha(new):raise RuntimeError('FTP staged checksum mismatch for '+label)
+                  prepared.append((label,target,old,new,staged,previous))
+              for item in prepared:
+                  label,target,old,new,staged,previous=item
+                  ftp.rename(target,previous)
+                  moved.append([item,False])
+                  ftp.rename(staged,target)
+                  moved[-1][1]=True
+                  if sha(get(target))!=sha(new):raise RuntimeError('Installed checksum mismatch for '+label)
+                  print('PASS installed:',label,'on api-nghiencuukhoahoc.webnvn.com ONLY')
+              if not changed:print('PASS: Existing live files already match, no duplicate upload.')
+          except Exception:
+              for item,installed in reversed(moved):
+                  label,target,old,new,staged,previous=item
+                  if installed:
+                      try:ftp.delete(target)
+                      except ftplib.all_errors:pass
+                  ftp.rename(previous,target)
+                  if sha(get(target))!=sha(old):raise RuntimeError('Rollback integrity failed: '+label)
+              raise
+          finally:
+              ftp.quit()
+          print('PASS: both staging-only config files have verified checksums, with private recoverable backups.')
+          PY
+      - name: GET-only verify fast redirect and unchanged REST routes
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import subprocess,urllib.parse
+          base='https://api-nghiencuukhoahoc.webnvn.com'
+          def test(path,expected,redirect=None,source=None):
+              cmd=['curl','-sS','-D','-','-o','/dev/null','--max-time','25','-w','\nNCKH_STATS=%{http_code},%{time_starttransfer},%{time_total}\n',base+path]
+              c=subprocess.run(cmd,text=True,capture_output=True,timeout=30)
+              if c.returncode:raise RuntimeError('GET failure on '+path)
+              response=c.stdout
+              # Only print selected harmless status/timing metadata; never cookie or raw body.
+              print('URL',path)
+              for line in response.splitlines():
+                  if line.startswith(('HTTP/','NCKH_STATS=')):print(line[:160])
+              if ('NCKH_STATS='+str(expected)+',') not in response:
+                  raise RuntimeError('Unexpected status '+path)
+              if redirect:
+                  loc=next((line.partition(':')[2].strip() for line in response.splitlines() if line.lower().startswith('location:')),'')
+                  if urllib.parse.urlsplit(loc).path!=redirect:raise RuntimeError('Incorrect redirect target '+path)
+                  print('Redirect path:',redirect)
+              if source:
+                  if ('X-Redirect-By: WordPress' in response or 'x-redirect-by: WordPress' in response):
+                      raise RuntimeError('Homepage still boots WordPress before redirect')
+                  print('PASS: root redirect issued before WordPress runtime')
+          test('/',302,'/wp-admin/',True)
+          test('/wp-admin/',302,'/wp-login.php')
+          test('/wp-json/',200)
+          print('PASS: exact API staging homepage fast redirect and existing WP REST still respond.')
+          PY
