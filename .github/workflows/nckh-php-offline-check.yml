@@ -37,6 +37,9 @@ jobs:
           php -l source/wp-content/mu-plugins/nckh-research-api.php
           php -l source/tests/nckh-research-api.test.php
           php source/tests/nckh-research-api.test.php
+          php -l source/wp-content/mu-plugins/nckh-ai-feedback.php
+          php -l source/tests/nckh-ai-feedback.test.php
+          php source/tests/nckh-ai-feedback.test.php
           php -l source/wp-content/mu-plugins/nckh-staging-rest-profile.php
           php -l source/tests/nckh-staging-rest-profile.test.php
           php source/tests/nckh-staging-rest-profile.test.php
