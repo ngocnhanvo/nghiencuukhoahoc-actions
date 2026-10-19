@@ -5,11 +5,17 @@ on:
     paths:
       - '.github/workflows/nckh-php-offline-check.yml'
   workflow_dispatch:
+  issues:
+    types: [opened]
 permissions:
   contents: read
 jobs:
   php:
-    if: github.repository == 'ngocnhanvo/nghiencuukhoahoc-actions'
+    if: >-
+      github.repository == 'ngocnhanvo/nghiencuukhoahoc-actions'
+      && (github.event_name != 'issues'
+          || (github.event.issue.user.login == 'ngocnhanvo'
+              && github.event.issue.title == '[nckh] Verify backend offline only'))
     runs-on: ubuntu-latest
     timeout-minutes: 7
     env:
