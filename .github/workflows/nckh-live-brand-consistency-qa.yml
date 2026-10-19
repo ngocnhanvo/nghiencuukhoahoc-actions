@@ -39,10 +39,18 @@ jobs:
                 'logo_keys',sorted(raw_logo.keys()) if isinstance(raw_logo,dict) else [],
                 'logo_host',urllib.parse.urlparse(str(raw_logo.get('url') or '')).hostname if isinstance(raw_logo,dict) else 'none')
           logo=str((raw_logo or {}).get('url') or '') if isinstance(raw_logo,dict) else ''
+          if not logo:
+              print('WP_PUBLISHED_MEDIA_EMPTY_USE_HOME_DIAGNOSTIC',True)
           if not logo.startswith(wp+'/wp-content/uploads/'):
               raise RuntimeError('WordPress live brand logo missing or unsafe; refusing to approve fallback E')
           print('WP_PUBLISHED_LOGO_PRESENT',bool(logo))
-          _,head=get(homepage+'/')
+          home_html=get(homepage+'/')[0].decode('utf8','replace')
+          home_img=re.search(r'<a\\b(?=[^>]*aria-label="Về trang chủ")[^>]*>(.*?)</a>',home_html,re.S|re.I)
+          if home_img:
+              img=re.search(r'<img\\b[^>]*>',home_img.group(1),re.S|re.I)
+              if img:
+                  src=re.search(r'\\bsrc="([^"]+)"',img.group(0))
+                  print('PUBLIC_HOME_LOGO_SRC',html.unescape(src.group(1)) if src else 'missing')
           for path in ('/so-tay','/xem-truoc'):
               text=get(homepage+path)[0].decode('utf8','replace')
               anchor=re.search(r'<a\b(?=[^>]*\bclass="[^"]*nckh-app-brand)[^>]*>(.*?)</a>',text,re.S|re.I)
