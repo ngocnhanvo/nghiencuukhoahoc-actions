@@ -32,7 +32,13 @@ jobs:
           if not isinstance(rows,list):raise RuntimeError('WP public Info is not an array')
           entry=next((v for v in rows if (v.get('acf') or {}).get('product_lang')=='vi'),
                      next((v for v in rows if not (v.get('acf') or {}).get('product_lang')),rows[0] if rows else {}))
-          logo=str(((entry.get('acf') or {}).get('logo') or {}).get('url') or '')
+          fields=entry.get('acf') or {}
+          raw_logo=fields.get('logo')
+          print('WP_INFO_PUBLIC_DIAGNOSTIC','entries',len(rows),'row_keys',sorted(entry.keys()),
+                'acf_present',bool(fields),'logo_type',type(raw_logo).__name__,
+                'logo_keys',sorted(raw_logo.keys()) if isinstance(raw_logo,dict) else [],
+                'logo_host',urllib.parse.urlparse(str(raw_logo.get('url') or '')).hostname if isinstance(raw_logo,dict) else 'none')
+          logo=str((raw_logo or {}).get('url') or '') if isinstance(raw_logo,dict) else ''
           if not logo.startswith(wp+'/wp-content/uploads/'):
               raise RuntimeError('WordPress live brand logo missing or unsafe; refusing to approve fallback E')
           print('WP_PUBLISHED_LOGO_PRESENT',bool(logo))
