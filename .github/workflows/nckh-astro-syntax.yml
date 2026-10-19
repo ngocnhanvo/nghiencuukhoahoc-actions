@@ -63,4 +63,16 @@ jobs:
           set -e
           cat "${RUNNER_TEMP}/parse.log" >> "$report"
           if [ "$parse_result" -ne 0 ]; then exit "$parse_result"; fi
+          if pnpm exec vitest run \
+            src/astro/components/Layout/Header.research-layout.test.ts \
+            src/astro/components/Layout/Header.mobile-sticky.test.ts \
+            src/astro/components/Layout/headerScrollState.research.test.ts \
+            > "${RUNNER_TEMP}/header-tests.log" 2>&1; then
+            printf '\nEduResearch header regression tests: **PASS**.\n' >> "$report"
+            grep -E 'Test Files|Tests  ' "${RUNNER_TEMP}/header-tests.log" >> "$report" || true
+          else
+            printf '\nEduResearch header regression tests: **FAIL**.\n' >> "$report"
+            tail -n 55 "${RUNNER_TEMP}/header-tests.log" >> "$report"
+            exit 1
+          fi
           printf '\nNo FTP, WordPress writes, merge or deployment.\n' >> "$report"
