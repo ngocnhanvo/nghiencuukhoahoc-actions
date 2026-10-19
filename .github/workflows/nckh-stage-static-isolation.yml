@@ -1,0 +1,79 @@
+name: NCKH Staging Test Root Static Dependency (reversible)
+on:
+  issues:
+    types: [opened]
+permissions:
+  contents: read
+concurrency:
+  group: nckh-astro-production-deploy
+  cancel-in-progress: false
+jobs:
+  isolate:
+    if: >-
+      github.repository == 'ngocnhanvo/nghiencuukhoahoc-actions'
+      && github.event.issue.user.login == 'ngocnhanvo'
+      && github.event.issue.title == '[nckh] Test root HTML removal safely'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      FTP_SERVER: ${{ secrets.FTP_SERVER }}
+      FTP_USERNAME: ${{ secrets.FTP_USERNAME }}
+      FTP_PASSWORD: ${{ secrets.FTP_PASSWORD }}
+    steps:
+      - name: Temporarily rename only static preview index; compare and always restore
+        shell: bash
+        run: |
+          set -euo pipefail
+          set +x
+          python3 - <<'PY'
+          import ftplib,hashlib,os,urllib.request,urllib.error
+          from urllib.parse import urlparse
+          site='https://nghiencuukhoahoc.webnvn.com/xem-truoc/'
+          docroot='/domains/nghiencuukhoahoc.webnvn.com/public_html/xem-truoc'
+          class NoRedirect(urllib.request.HTTPRedirectHandler):
+              def redirect_request(self,*args,**kwargs):return None
+          opener=urllib.request.build_opener(NoRedirect)
+          def probe():
+              req=urllib.request.Request(site,headers={'Cache-Control':'no-cache','User-Agent':'NCKH-Static-Isolation-Safety/1'},method='GET')
+              try:
+                  with opener.open(req,timeout=12) as res:
+                      return res.status,res.headers.get('Content-Type',''),hashlib.sha256(res.read(250000)).hexdigest()
+              except urllib.error.HTTPError as e:
+                  e.close()
+                  return e.code,'',None
+          baseline=probe()
+          print('BEFORE',baseline[0],'html', 'html' in baseline[1].lower())
+          if baseline[0]!=200 or 'html' not in baseline[1].lower():raise RuntimeError('Baseline unavailable; refuse to touch FTP')
+          v=os.environ['FTP_SERVER']
+          parsed=urlparse(v if '://' in v else 'ftps://'+v)
+          conn=ftplib.FTP_TLS()
+          conn.connect(parsed.hostname,parsed.port or 21,timeout=20)
+          conn.login(os.environ['FTP_USERNAME'],os.environ['FTP_PASSWORD'])
+          conn.prot_p()
+          moved=False
+          compare=None
+          try:
+              conn.cwd(docroot)
+              names=set(conn.nlst())
+              if 'index.html' not in {s.rsplit('/',1)[-1] for s in names}:
+                  raise RuntimeError('Expected root sample index missing')
+              guard='.nckh-route-isolation-20261019.html'
+              if guard in {s.rsplit('/',1)[-1] for s in names}:
+                  raise RuntimeError('Temporary name occupied; refusing to overwrite')
+              conn.rename('index.html',guard)
+              moved=True
+              compare=probe()
+              print('WITHOUT_ROOT_COPY',compare[0],'html', 'html' in compare[1].lower(), 'same_as_before',compare[2]==baseline[2] if compare[0]==200 else False)
+          finally:
+              if moved:
+                  conn.rename('.nckh-route-isolation-20261019.html','index.html')
+                  print('RESTORED original staging xem-truoc/index.html')
+              conn.quit()
+          restored=probe()
+          print('RESTORED_GET',restored[0], 'same_as_before',restored[2]==baseline[2])
+          if restored!=baseline:raise RuntimeError('Rollback not identical; inspect staging immediately')
+          if compare is None or compare[0]!=200 or compare[2]!=baseline[2]:
+              print('RESULT root static fallback REQUIRED for preview: cleanup BLOCKED until static routing repaired')
+              raise SystemExit(2)
+          print('RESULT root HTML not required for preview URL under current proxy; safe to evaluate other pages')
+          PY
