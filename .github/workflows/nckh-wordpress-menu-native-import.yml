@@ -1,0 +1,87 @@
+name: NCKH WordPress Header native menu JSON import
+on:
+  issues:
+    types: [opened]
+permissions:
+  contents: read
+jobs:
+  replace:
+    if: >-
+      github.repository == 'ngocnhanvo/nghiencuukhoahoc-actions'
+      && github.event.issue.user.login == 'ngocnhanvo'
+      && github.event.issue.title == '[nckh] Import true EduResearch WordPress Header'
+    runs-on: ubuntu-latest
+    timeout-minutes: 7
+    env:
+      WP_USER: ${{ secrets.WP_ADMIN_USERNAME }}
+      WP_PASS: ${{ secrets.WP_ADMIN_PASSWORD }}
+    steps:
+      - name: Use pre-existing WP menu JSON Preview and rollback-safe Replace endpoint
+        shell: bash
+        run: |
+          set -euo pipefail
+          set +x
+          python3 - <<'PY'
+          import json,os,re,urllib.parse,urllib.request,urllib.error,http.cookiejar,html
+          base='https://api-nghiencuukhoahoc.webnvn.com'
+          items=[
+             dict(key='home',lang='vi',label='Trang chủ',href='/',linkMode='custom'),
+             dict(key='nckh-intro',lang='vi',label='Giới thiệu',href='/#gioi-thieu',linkMode='custom'),
+             dict(key='nckh-notebook',lang='vi',label='Sổ tay NCKH',href='/so-tay',linkMode='custom'),
+             dict(key='nckh-teachers',lang='vi',label='Giáo viên hướng dẫn',href='/so-tay?tab=teachers',linkMode='custom'),
+             dict(key='nckh-skills',lang='vi',label='Đánh giá kỹ năng',href='/so-tay?tab=skills',linkMode='custom'),
+             dict(key='nckh-cta',lang='vi',label='Khám phá nền tảng',href='/so-tay',linkMode='custom'),
+          ]
+          expected=[(x['label'],x['href']) for x in items]
+          opener=urllib.request.build_opener(urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()))
+          def load(path,body=None):
+              req=urllib.request.Request(base+path,data=body,headers={'User-Agent':'NCKH-Menu-Native-Importer/1'})
+              with opener.open(req,timeout=30) as r:return r.geturl(),r.read(450000)
+          load('/wp-login.php')
+          login_url,_=load('/wp-login.php',urllib.parse.urlencode({
+            'log':os.environ['WP_USER'],'pwd':os.environ['WP_PASS'],
+            'wp-submit':'Log In','redirect_to':base+'/wp-admin/','testcookie':'1'}).encode())
+          if not login_url.startswith(base+'/wp-admin'):raise RuntimeError('Admin login failed')
+          _,page=load('/wp-admin/nav-menus.php?action=edit&menu=1687')
+          src=page.decode('utf8','replace')
+          tag=re.search(r'<button\b(?=[^>]*\bid="esc-pse-menu-json-preview")([^>]+)>',src,re.I)
+          if not tag:raise RuntimeError('Menu JSON importer UI unavailable')
+          attrs=tag.group(1)
+          menu_id=re.search(r'\bdata-menu-id="(\d+)"',attrs)
+          nonce=re.search(r'\bdata-nonce="([^"]+)"',attrs)
+          if not menu_id or menu_id.group(1)!='1687' or not nonce:raise RuntimeError('Wrong menu or importer nonce')
+          nonce_value=html.unescape(nonce.group(1))
+          def ajax(action,confirm=None):
+              values={'action':action,'menu_id':'1687','nonce':nonce_value,'json':json.dumps(items,ensure_ascii=False)}
+              if confirm:values['confirm']=confirm
+              _,body=load('/wp-admin/admin-ajax.php',urllib.parse.urlencode(values).encode('utf8'))
+              out=json.loads(body)
+              if not out.get('success'):
+                  print('WP_MENU_AJAX_REJECTED',action,'error_type',str((out.get('data') or {}).get('message',''))[:140])
+                  raise RuntimeError('WordPress menu native importer failed')
+              return out.get('data') or {}
+          preview=ajax('esc_pse_menu_json_preview')
+          stats=preview.get('stats') or {}
+          print('PREVIEW stats', {k:stats.get(k) for k in ('total','pageMatches','customLinks','linkless','excludedLanguage')})
+          if (stats.get('total'),stats.get('customLinks'),stats.get('pageMatches'))!=(6,6,0):
+              raise RuntimeError('Refuse unexpected WP menu preview')
+          result=ajax('esc_pse_menu_json_replace','replace')
+          print('REPLACED six research menu entries',result.get('items'))
+          _,body=load('/wp-json/esc-api/v1/menus?_esc_preview=20261019-real-nav')
+          response=json.loads(body)
+          menu=response.get('menus',{}).get('Header',{}).get('vi',{})
+          children=menu.get('items',[])
+          actual=[(x.get('label'),x.get('href') or x.get('slug')) for x in children]
+          print('PUBLIC_MENU actual',actual)
+          def normalized(v):
+              v=str(v).strip()
+              if v.startswith('/'):return v
+              if v.startswith('#'):return '/'+v
+              return '/'+v
+          if menu.get('id')!=1687 or len(children)!=6 or [x[0] for x in actual]!=[x[0] for x in expected]:
+              raise RuntimeError('WP menu public labels mismatch after import')
+          if [normalized(v) for _,v in actual]!=[v for _,v in expected]:
+              raise RuntimeError('WP menu public links mismatch after import')
+          if any(x.get('children') for x in children):raise RuntimeError('Old submenu present')
+          print('PASS: WordPress Header vi is the sole live UI menu source; links to actual notebook/teacher/skills and login are correct.')
+          PY
