@@ -1,0 +1,184 @@
+name: NCKH Astro github branch staging-only deployment
+on:
+  issues:
+    types: [opened]
+permissions:
+  contents: read
+concurrency:
+  group: nckh-astro-production-deploy
+  cancel-in-progress: false
+jobs:
+  stage_dev:
+    if: >-
+      github.repository == 'ngocnhanvo/nghiencuukhoahoc-actions'
+      && github.event.issue.user.login == 'ngocnhanvo'
+      && github.event.issue.title == '[nckh] Deploy Astro github to staging'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      ENV_FILE: ${{ secrets.ENV_FILE }}
+      SOURCE_REPO_PAT: ${{ secrets.SOURCE_REPO_PAT }}
+      FTP_SERVER: ${{ secrets.FTP_SERVER }}
+      FTP_USERNAME: ${{ secrets.FTP_USERNAME }}
+      FTP_PASSWORD: ${{ secrets.FTP_PASSWORD }}
+      ASTRO_FTP_TARGET: /domains/nghiencuukhoahoc.webnvn.com/public_html/
+      FTP_ASTRO_DIR: /domains/nghiencuukhoahoc.webnvn.com/public_html/
+      ZIP_PATH: source/upload/nckh-astro.zip
+      NCKH_STAGING_SOURCE: github
+    steps:
+      - name: Checkout immutable NCKH deploy scripts
+        uses: actions/checkout@v4
+        with:
+          path: actions-hub
+      - name: Checkout only Astro DEVELOPMENT branch
+        uses: actions/checkout@v4
+        with:
+          repository: ngocnhanvo/nghiencuukhoahoc-astro
+          ref: github
+          token: ${{ secrets.SOURCE_REPO_PAT }}
+          path: source
+          persist-credentials: false
+      - name: Verify strict stage destination and source provenance
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$ENV_FILE" && test -n "$SOURCE_REPO_PAT"
+          test -n "$FTP_SERVER" && test -n "$FTP_USERNAME" && test -n "$FTP_PASSWORD"
+          test "$ASTRO_FTP_TARGET" = /domains/nghiencuukhoahoc.webnvn.com/public_html/
+          test "$(git -C source symbolic-ref --short HEAD)" = github
+          sha="$(git -C source rev-parse HEAD)"
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]]
+          echo "NCKH_STAGING_COMMIT=$sha" >> "$GITHUB_ENV"
+          python3 - <<'PY'
+          import os,re
+          raw=os.environ['ENV_FILE']
+          vals={}
+          for line in raw.splitlines():
+              m=re.match(r'^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)\s*$',line)
+              if m:vals[m[1]]=m[2].strip().strip('"\'')
+          if vals.get('WC_URL','').rstrip('/')!='https://api-nghiencuukhoahoc.webnvn.com':
+              raise RuntimeError('Unexpected WordPress source in build ENV_FILE')
+          if vals.get('WC_URL_CLIENT','').rstrip('/') not in (
+              'https://nghiencuukhoahoc.webnvn.com','https://nghiencuukhoahoc.id.vn'):
+              raise RuntimeError('Unexpected website build origin')
+          if 'NCKH_GOOGLE_OAUTH_JSON' in vals or 'NCKH_SESSION_KEY' in vals or 'GOOGLE_OAUTH_STAGING_JSON' in vals:
+              raise RuntimeError('Refusing to build with public-root Google/session secrets')
+          print('PASS: staging WordPress source and Astro github ref verified; no OAuth secret in build env.')
+          PY
+      - name: Check signed unzip staging destination before any build or FTP
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m py_compile actions-hub/scripts/nckh-remote-unzip.py
+          python3 actions-hub/scripts/nckh-remote-unzip.py verify
+      - name: Install and build Astro github (no OAuth credentials in build)
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Build server and client for staging
+        shell: bash
+        working-directory: source
+        run: |
+          set -euo pipefail
+          corepack enable
+          corepack prepare pnpm@9 --activate
+          pnpm install --frozen-lockfile
+          printf '%s\n' "$ENV_FILE" > .env
+          printf '\nNCKH_HOMEPAGE_ONLY_BUILD=true\ncacheAll=false\ncachePage=false\ncacheProduct=false\ncacheTablePress=false\ncacheRedirect=false\ncacheMenu=false\ncacheProductCategory=false\n' >> .env
+          export NCKH_HOMEPAGE_ONLY_BUILD=true
+          export cacheAll=false cachePage=false cacheProduct=false cacheTablePress=false
+          export cacheRedirect=false cacheMenu=false cacheProductCategory=false
+          export WC_URL=https://api-nghiencuukhoahoc.webnvn.com
+          export NODE_ENV=production
+          pnpm run build-git
+          node --check dist/server/entry.mjs
+          test -s dist/client/index.html
+          test -s dist/server/entry.mjs
+          ! grep -q 'xuongmunonbaohiem' dist/client/index.html
+          # Verify that the new application has SSR route records, not just a static homepage.
+          find dist/server -type f | grep -Eq 'nckh|auth|so-tay' ||
+            grep -Rq 'api/auth/google/start' dist/server
+          echo "Build source SHA: $(git rev-parse HEAD) (github)" >> "$GITHUB_STEP_SUMMARY"
+      - name: Package only compiled staging output (strictly no .env)
+        shell: bash
+        working-directory: source
+        run: |
+          set -euo pipefail
+          mkdir -p deploy upload
+          cp -a dist/. deploy/
+          cp -a dist/client/. deploy/
+          echo "$(date +%s)" > deploy/pm2-reload.txt
+          python3 - <<'PY'
+          import json,os
+          sha=os.environ['NCKH_STAGING_COMMIT']
+          with open('deploy/nckh-staging-build.json','w',encoding='utf8') as handle:
+              json.dump({'branch':'github','commit':sha,'target':'nghiencuukhoahoc.webnvn.com'},handle)
+          PY
+          test ! -e deploy/.env
+          test -s deploy/server/entry.mjs
+          test -s deploy/client/index.html
+          cd deploy
+          zip -q -r ../upload/nckh-astro.zip .
+          cd ..
+          python3 - <<'PY'
+          from zipfile import ZipFile
+          with ZipFile('upload/nckh-astro.zip') as z:
+              names=z.namelist()
+              if '.env' in names or any(name.startswith('nckh-private-runtime') for name in names):
+                  raise RuntimeError('Refusing archive with private runtime secrets')
+              for required in ('server/entry.mjs','client/index.html','nckh-staging-build.json'):
+                  if required not in names:raise RuntimeError('Missing staged bundle file: '+required)
+          print('PASS: ZIP contains dev server/client and provenance, no private environment file.')
+          PY
+      - name: Install encrypted FTP client
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! command -v lftp >/dev/null 2>&1; then
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq --no-install-recommends lftp
+          fi
+      - name: Upload compiled staging archive by FTP-TLS
+        shell: bash
+        run: bash actions-hub/scripts/nckh-resumable-ftp.sh
+      - name: Verify provenance and activate staging bundle using signed PHP rollback
+        shell: bash
+        run: python3 actions-hub/scripts/nckh-remote-unzip.py unpack
+      - name: Check staging page and new private SSR route (GET only)
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json,urllib.request,urllib.error,time
+          base='https://nghiencuukhoahoc.webnvn.com'
+          def fetch(path):
+              req=urllib.request.Request(base+path,headers={
+                  'Accept':'application/json' if path.startswith('/api/') else 'text/html',
+                  'Cache-Control':'no-cache',
+                  'User-Agent':'NCKH-Stage-AfterDeploy/1.0',
+              })
+              try:
+                  with urllib.request.urlopen(req,timeout=18) as r:
+                      return r.status,r.headers.get('Content-Type',''),r.read(3500)
+              except urllib.error.HTTPError as e:
+                  return e.code,e.headers.get('Content-Type',''),e.read(3500)
+          # Node hosting may need a process restart for a newly uploaded bundle.
+          last=None
+          for attempt in range(5):
+              try:
+                  home=fetch('/')
+                  session=fetch('/api/auth/me')
+                  notebook=fetch('/so-tay')
+                  if home[0]==200 and 'html' in home[1].lower() and \
+                      session[0]==401 and 'json' in session[1].lower() and \
+                      json.loads(session[2]).get('authenticated') is False and \
+                      notebook[0]==200:
+                      print('PASS: staging DEV homepage, /so-tay and private Astro auth endpoint served over SSR.')
+                      raise SystemExit(0)
+                  last=(home[0],session[0],notebook[0])
+              except Exception as exc:
+                  last=('request-error',type(exc).__name__)
+              time.sleep(4)
+          print('NOT VERIFIED: staging Node process may need restart; observed:',last)
+          raise SystemExit(1)
+          PY
