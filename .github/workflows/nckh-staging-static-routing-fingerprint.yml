@@ -1,0 +1,58 @@
+name: NCKH staging routing fingerprint (read-only)
+on:
+  issues:
+    types: [opened]
+permissions:
+  contents: read
+jobs:
+  probe:
+    if: >-
+      github.repository == 'ngocnhanvo/nghiencuukhoahoc-actions'
+      && github.event.issue.user.login == 'ngocnhanvo'
+      && github.event.issue.title == '[nckh] Compare staging root and Astro routing'
+    runs-on: ubuntu-latest
+    timeout-minutes: 4
+    steps:
+      - name: Probe public page fingerprints and upstream headers without content logging
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import urllib.request,urllib.error,hashlib
+          base="https://nghiencuukhoahoc.webnvn.com"
+          class NoRedirect(urllib.request.HTTPRedirectHandler):
+              def redirect_request(self,*args,**kwargs):return None
+          opener=urllib.request.build_opener(NoRedirect)
+          paths=["/","/index.html","/client/index.html",
+                 "/so-tay","/so-tay/","/so-tay/index.html",
+                 "/xem-truoc","/xem-truoc/","/xem-truoc/index.html"]
+          results={}
+          for path in paths:
+              req=urllib.request.Request(base+path,method="GET",headers={
+                  "User-Agent":"NCKH-Staging-Routing-ReadOnly/1.0",
+                  "Cache-Control":"no-cache",
+                  "Accept":"text/html"
+              })
+              try:
+                  with opener.open(req,timeout=12) as r:
+                      code=r.status
+                      headers=r.headers
+                      body=r.read(300000)
+              except urllib.error.HTTPError as e:
+                  code=e.code;headers=e.headers;body=b""
+              except Exception as e:
+                  print("ROUTE",path,"ERROR",type(e).__name__)
+                  continue
+              digest=hashlib.sha256(body).hexdigest() if code==200 else None
+              results[path]=(code,digest)
+              print("ROUTE",path,"status",code,"kind",headers.get("Content-Type","").split(";")[0],
+                    "cache",headers.get("Cache-Control","")[:90],
+                    "has-etag",bool(headers.get("ETag")),
+                    "size",len(body))
+          for a,b in [("/","/index.html"),
+                      ("/so-tay/","/so-tay/index.html"),
+                      ("/xem-truoc/","/xem-truoc/index.html")]:
+              left,right=results.get(a,(None,None)),results.get(b,(None,None))
+              print("MATCH",a,b,left[0]==right[0]==200 and left[1]==right[1])
+          print("Read-only; no file deletion or production request.")
+          PY
