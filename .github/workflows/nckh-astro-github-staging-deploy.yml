@@ -105,18 +105,20 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p deploy upload
-          # Astro Node standalone already places static public assets under
-          # dist/client and runtime assets under dist/server. Do not flatten
-          # dist/client into the webroot: it creates duplicate index.html,
-          # so-tay/, xem-truoc/ and other prerendered files beside client/.
-          # This package intentionally does NOT delete any existing FTP paths;
-          # a separately verified cleanup is required for old duplicates.
+          # IMPORTANT: Staging hosting still serves root index.html and
+          # /so-tay/index.html, /xem-truoc/index.html as public HTML.
+          # Confirmed by bounded GET fingerprint run 39209244691 after
+          # Node restart: /client/index.html returns HTTP 404, while the
+          # root HTML counterparts are accessible and byte-identical.
+          # Keep the root fallback synchronized UNTIL webserver routing
+          # has independently been changed and verified.
           cp -a dist/. deploy/
+          cp -a dist/client/. deploy/
           test -s deploy/client/index.html
           test -s deploy/server/entry.mjs
-          test ! -e deploy/index.html
-          test ! -e deploy/so-tay
-          test ! -e deploy/xem-truoc
+          cmp -s deploy/client/index.html deploy/index.html
+          cmp -s deploy/client/so-tay/index.html deploy/so-tay/index.html
+          cmp -s deploy/client/xem-truoc/index.html deploy/xem-truoc/index.html
           echo "$(date +%s)" > deploy/pm2-reload.txt
           python3 - <<'PY'
           import json,os
@@ -136,9 +138,12 @@ jobs:
               names=z.namelist()
               if '.env' in names or any(name.startswith('nckh-private-runtime') for name in names):
                   raise RuntimeError('Refusing archive with private runtime secrets')
-              # Never reintroduce the legacy copied client tree at public_html root.
-              if any(name in names for name in ('index.html','so-tay/','xem-truoc/','404.html')):
-                  raise RuntimeError('Staging bundle must keep client and server trees separate')
+              # The static fallback is currently LIVE; ship identical root HTML.
+              for page in ('index.html','so-tay/index.html','xem-truoc/index.html'):
+                  if page not in names or 'client/'+page not in names:
+                      raise RuntimeError('Missing required staging public HTML fallback: '+page)
+                  if z.read(page)!=z.read('client/'+page):
+                      raise RuntimeError('Staging fallback differs from Astro client: '+page)
               for required in ('server/entry.mjs','client/index.html','nckh-staging-build.json'):
                   if required not in names:raise RuntimeError('Missing staged bundle file: '+required)
           print('PASS: ZIP contains dev server/client and provenance, no private environment file.')
