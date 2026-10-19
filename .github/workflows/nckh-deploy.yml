@@ -15,8 +15,12 @@ concurrency:
   cancel-in-progress: false
 jobs:
   astro:
+    # Legacy workflow checks out Astro master, copies dist/client into public_html
+    # and can package .env into staging. Freeze staging writes from this path.
+    # Re-enable only after a distinct production-domain target is reviewed.
+    # Approved staging deploy is nckh-astro-github-staging-deploy.yml (github).
     if: >-
-      github.repository == 'ngocnhanvo/nghiencuukhoahoc-actions'
+      false && github.repository == 'ngocnhanvo/nghiencuukhoahoc-actions'
       && (github.event_name == 'workflow_dispatch'
         || (github.event_name == 'repository_dispatch'
           && (github.event.client_payload.site_domain == 'nghiencuukhoahoc.id.vn'
