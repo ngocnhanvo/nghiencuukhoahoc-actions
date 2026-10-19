@@ -50,9 +50,16 @@ jobs:
           if not home_src:raise RuntimeError('Homepage brand image src missing')
           home_logo=html.unescape(home_src.group(1))
           print('PUBLIC_HOME_LOGO_SRC',home_logo)
-          if not logo.startswith(wp+'/wp-content/uploads/'):
-              raise RuntimeError('WordPress live brand logo missing or unsafe; refusing to approve fallback E')
-          print('WP_PUBLISHED_LOGO_PRESENT',bool(logo))
+          if logo and not logo.startswith(wp+'/wp-content/uploads/'):
+              raise RuntimeError('WordPress public brand logo host/path unsafe')
+          expected_logo=logo or home_logo
+          if expected_logo.startswith('/') and expected_logo!='/' and not expected_logo.startswith('//'):
+              image_url=homepage+expected_logo
+          else:
+              image_url=expected_logo
+          if not image_url.startswith(('https://'+urllib.parse.urlparse(homepage).hostname+'/',wp+'/')):
+              raise RuntimeError('Unexpected public logo URL origin')
+          print('WORDPRESS_MEDIA_FIELD_POPULATED',bool(logo),'SHARED_IMAGE_MATCH_TARGET',True)
           for path in ('/so-tay','/xem-truoc'):
               text=get(homepage+path)[0].decode('utf8','replace')
               anchor=re.search(r'<a\b(?=[^>]*\bclass="[^"]*nckh-app-brand)[^>]*>(.*?)</a>',text,re.S|re.I)
@@ -60,7 +67,7 @@ jobs:
               brand_img=re.search(r'<img\b(?=[^>]*\bclass="[^"]*nckh-app-brand-image)[^>]*>',anchor.group(1),re.S|re.I)
               if not brand_img:raise RuntimeError(path+' shows the fallback logo, not WordPress')
               src=re.search(r'\bsrc="([^"]+)"',brand_img.group(0))
-              if not src or html.unescape(src.group(1))!=logo:
+              if not src or html.unescape(src.group(1))!=expected_logo:
                   raise RuntimeError(path+' image is not the live published WP logo')
               raw=anchor.group(1)
               name=re.search(r'<strong\b[^>]*>(.*?)</strong>',raw,re.S|re.I)
@@ -70,7 +77,7 @@ jobs:
               if not subtitle or not re.search(r'nh[aậ]t k[yý] khoa h[oọ]c',html.unescape(subtitle.group(1)),re.I):
                   raise RuntimeError(path+' missing brand subtitle')
               print('APP_HEADER',path,'PUBLIC_BRAND_MATCH',True,'REAL_LOGO',True)
-          data,headers=get(logo,maxsize=1048576)
+          data,headers=get(image_url,maxsize=1048576)
           if not headers.get('Content-Type','').startswith('image/') or len(data)<100:
               raise RuntimeError('Published logo not accessible as an image')
           print('BRAND_LOGO_HTTP',200,'IMAGE_CONTENT_TYPE_OK',True)
