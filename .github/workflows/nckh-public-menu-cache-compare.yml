@@ -1,0 +1,29 @@
+name: NCKH WP menu stale cache comparison
+on:
+  issues:
+    types: [opened]
+permissions:
+  contents: read
+jobs:
+  check:
+    if: >-
+      github.repository == 'ngocnhanvo/nghiencuukhoahoc-actions'
+      && github.event.issue.user.login == 'ngocnhanvo'
+      && github.event.issue.title == '[nckh] Check WordPress Header menu cache'
+    runs-on: ubuntu-latest
+    timeout-minutes: 4
+    steps:
+      - name: Compare WordPress ESC menu normal and preview freshness
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json,time,urllib.request
+          base='https://api-nghiencuukhoahoc.webnvn.com/wp-json/esc-api/v1/menus'
+          for q in ('','?_esc_preview=2026101911','?_esc_preview='+str(int(time.time()))):
+              req=urllib.request.Request(base+q,headers={'Cache-Control':'no-cache','Pragma':'no-cache','User-Agent':'NCKH-Menu-Cache-Audit/1'})
+              with urllib.request.urlopen(req,timeout=25) as r:
+                  menus=json.load(r).get('menus',{})
+                  h=menus.get('Header',{}).get('vi',{})
+                  print('MODE',('normal' if not q else 'preview'),'status',r.status,'cache_age',r.headers.get('Age','-'),'menu_id',h.get('id'),'labels',[i.get('label') for i in h.get('items',[])],'links',[i.get('href') or i.get('slug') for i in h.get('items',[])])
+          PY
