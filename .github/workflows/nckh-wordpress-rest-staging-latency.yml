@@ -54,7 +54,7 @@ jobs:
                       raise RuntimeError('Private response is not marked no-store')
                   samples.append((first,total))
                   for chunk in h.get('Server-Timing','').split(','):
-                      metric=re.fullmatch(r'\\s*(wp-(?:early|plugins|theme|init|rest|total));dur=(\\d+(?:\\.\\d+)?)\\s*',chunk)
+                      metric=re.fullmatch(r'[ \t]*(wp-(?:early|plugins|theme|init|rest|total));dur=([0-9]+(?:[.][0-9]+)?)[ \t]*',chunk)
                       if metric:
                           phases.setdefault(metric.group(1),[]).append(float(metric.group(2)))
               ms=lambda n:round(n*1000)
