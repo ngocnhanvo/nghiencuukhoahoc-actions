@@ -1,0 +1,48 @@
+name: NCKH staging FTP duplicate root manifest (read only)
+on:
+  issues:
+    types: [opened]
+permissions:
+  contents: read
+jobs:
+  manifest:
+    if: >-
+      github.repository == 'ngocnhanvo/nghiencuukhoahoc-actions'
+      && github.event.issue.user.login == 'ngocnhanvo'
+      && github.event.issue.title == '[nckh] Audit staging duplicate root FTP'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      FTP_SERVER: ${{ secrets.FTP_SERVER }}
+      FTP_USERNAME: ${{ secrets.FTP_USERNAME }}
+      FTP_PASSWORD: ${{ secrets.FTP_PASSWORD }}
+    steps:
+      - name: Inventory root and client trees without credentials or source content
+        shell: bash
+        run: |
+          set -euo pipefail
+          set +x
+          python3 - <<'PY'
+          import ftplib,os,re
+          from urllib.parse import urlparse
+          root='/domains/nghiencuukhoahoc.webnvn.com/public_html'
+          u=os.environ['FTP_SERVER'];p=urlparse(u if '://' in u else 'ftps://'+u)
+          ftp=ftplib.FTP_TLS();ftp.connect(p.hostname,p.port or 21,timeout=25)
+          ftp.login(os.environ['FTP_USERNAME'],os.environ['FTP_PASSWORD']);ftp.prot_p()
+          def ls(path):
+              ftp.cwd(path)
+              return [entry.rsplit('/',1)[-1] for entry in ftp.nlst()]
+          try:
+              r=set(ls(root))
+              c=set(ls(root+'/client'))
+              exclude={'client','server','.env','.htaccess','nckh-staging-build.json','pm2-reload.txt','nckh-astro.zip','logs'}
+              extra=sorted(n for n in r-c if n not in exclude and re.fullmatch(r'[A-Za-z0-9._-]{1,120}',n))
+              duplicated=sorted(n for n in r&c if n not in exclude and re.fullmatch(r'[A-Za-z0-9._-]{1,120}',n))
+              print('ROOT_DUPLICATED',duplicated[:100])
+              print('ROOT_NOT_CLIENT_MIRROR',extra[:100])
+              print('ROOT_DOTENV_PRESENT','.env' in r)
+              print('ROOT_PROTECTED_SYSTEM_PRESENT',sorted(n for n in r if n in exclude))
+              print('DUPLICATE_COUNT',len(duplicated))
+          finally:
+              ftp.quit()
+          PY
