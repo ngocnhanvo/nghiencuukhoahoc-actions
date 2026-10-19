@@ -1,0 +1,62 @@
+name: NCKH Staging FTP Asset Restore Integrity (read only)
+on:
+  issues:
+    types: [opened]
+permissions:
+  contents: read
+jobs:
+  audit:
+    if: >-
+      github.repository == 'ngocnhanvo/nghiencuukhoahoc-actions'
+      && github.event.issue.user.login == 'ngocnhanvo'
+      && github.event.issue.title == '[nckh] Audit FTP asset restore integrity'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      FTP_SERVER: ${{ secrets.FTP_SERVER }}
+      FTP_USERNAME: ${{ secrets.FTP_USERNAME }}
+      FTP_PASSWORD: ${{ secrets.FTP_PASSWORD }}
+    steps:
+      - name: Compare staged FTP originals with HTTP and matching Astro client assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          set +x
+          python3 - <<'PY'
+          import ftplib,hashlib,io,os,urllib.request,urllib.error
+          from urllib.parse import urlparse
+          root='/domains/nghiencuukhoahoc.webnvn.com/public_html'
+          raw=os.environ['FTP_SERVER'];p=urlparse(raw if '://' in raw else 'ftps://'+raw)
+          ftp=ftplib.FTP_TLS();ftp.connect(p.hostname,p.port or 21,timeout=20);ftp.login(os.environ['FTP_USERNAME'],os.environ['FTP_PASSWORD']);ftp.prot_p()
+          pairs=(('robots.txt','robots.txt'),('sitemap.xml','sitemap.xml'),('index.html','index.html'),
+                 ('so-tay/index.html','so-tay/index.html'),('xem-truoc/index.html','xem-truoc/index.html'))
+          def ftp_read(relative):
+              path=root+'/'+relative
+              data=io.BytesIO()
+              try:
+                  ftp.retrbinary('RETR '+path,data.write,blocksize=8192)
+                  return data.getvalue()
+              except ftplib.all_errors:return None
+          try:
+              for web_path,client_path in pairs:
+                  root_body=ftp_read(web_path)
+                  client_body=ftp_read('client/'+client_path)
+                  print('FTP_ASSET',web_path,'root_exists',root_body is not None,'client_exists',client_body is not None,
+                        'byte_equal',root_body==client_body if root_body is not None and client_body is not None else False)
+                  req=urllib.request.Request('https://nghiencuukhoahoc.webnvn.com/'+web_path,
+                      headers={'Cache-Control':'no-cache','User-Agent':'NCKH-FTP-Integrity-ReadOnly'})
+                  try:
+                      with urllib.request.urlopen(req,timeout=12) as r:
+                          body=r.read(300000)
+                          print('HTTP_ASSET',web_path,'status',r.status,'match_root',body==root_body if root_body else False,'match_client',body==client_body if client_body else False)
+                  except urllib.error.HTTPError as e:
+                      print('HTTP_ASSET',web_path,'status',e.code)
+                      e.close()
+              for d in ('','_astro','tool'):
+                  ftp.cwd(root+('/'+d if d else ''))
+                  names=[x.rsplit('/',1)[-1] for x in ftp.nlst()]
+                  print('FTP_RENAME_LEFTOVER',d or 'root',sum(x.startswith('.nckh-asset-isolation-') for x in names))
+          finally:
+              ftp.quit()
+          print('Read only, no file values or secret contents disclosed.')
+          PY
