@@ -137,12 +137,28 @@ def main():
         raise ValueError("No Astro deployment ZIP exists")
     # Archived recovery ZIPs from a previous domain must not be deployed to a new domain.
     with ZipFile(archive) as zf:
-        packaged_env = zf.read(".env").decode("utf-8")
-        packaged_url = env_value(packaged_env, "WC_URL_CLIENT")
-        if validate_url(packaged_url)[1] != client_host:
-            raise ValueError("Archived ZIP was built for a different frontend domain")
+        if os.environ.get("NCKH_STAGING_SOURCE") == "github":
+            # New staging-only artifact protocol: never package .env or secrets.
+            # The existing master/prod workflow keeps its prior checks unchanged.
+            if ".env" in zf.namelist():
+                raise ValueError("Refusing staging archive containing public-root .env")
+            manifest = json.loads(zf.read("nckh-staging-build.json").decode("utf-8"))
+            commit = os.environ.get("NCKH_STAGING_COMMIT", "")
+            if (manifest.get("branch") != "github"
+                    or manifest.get("commit") != commit
+                    or not re.fullmatch(r"[0-9a-f]{40}", commit)
+                    or manifest.get("target") != "nghiencuukhoahoc.webnvn.com"
+                    or ftp_target != "/domains/nghiencuukhoahoc.webnvn.com/public_html/"):
+                raise ValueError("Unsigned or mismatched staging source provenance")
+        else:
+            packaged_env = zf.read(".env").decode("utf-8")
+            packaged_url = env_value(packaged_env, "WC_URL_CLIENT")
+            if validate_url(packaged_url)[1] != client_host:
+                raise ValueError("Archived ZIP was built for a different frontend domain")
         if "server/entry.mjs" not in zf.namelist():
             raise ValueError("Deployment ZIP is missing Astro server entry")
+        if "client/index.html" not in zf.namelist():
+            raise ValueError("Deployment ZIP missing Astro client index")
     sha = hashlib.sha256()
     with archive.open("rb") as file:
         for chunk in iter(lambda: file.read(1024 * 1024), b""):
