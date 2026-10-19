@@ -5,7 +5,7 @@ on:
 permissions:
   contents: read
 concurrency:
-  group: nckh-astro-production-deploy
+  group: nckh-staging-root-html-isolation
   cancel-in-progress: false
 jobs:
   test:
