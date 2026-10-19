@@ -58,7 +58,7 @@ jobs:
                       if metric:
                           phases.setdefault(metric.group(1),[]).append(float(metric.group(2)))
               ms=lambda n:round(n*1000)
-              label='projects' if path.endswith('/projects') else ('sections' if path.endswith('/sections') else ('skills' if path.endswith('/skills') else 'other'))
+              label='bootstrap' if path.endswith('/bootstrap') else ('workspace' if path.endswith('/workspace') else ('projects' if path.endswith('/projects') else ('sections' if path.endswith('/sections') else ('skills' if path.endswith('/skills') else 'other'))))
               print('PATH',label,
                     'HTTP',expected,'n',repeat,'TTFB_median_ms',ms(statistics.median(x[0] for x in samples)),
                     'TTFB_min_ms',ms(min(x[0] for x in samples)),
@@ -91,10 +91,21 @@ jobs:
               raise RuntimeError('Unexpected projects response')
           print('Authenticated GET projects works; no project titles or user data logged.')
           measure('/wp-json/nckh/v1/projects',headers,200)
+          measure('/wp-json/nckh/v1/bootstrap',headers,200)
+          # Only diagnostic metadata (plugin slugs), no private API payloads printed.
+          status,_,_,_,plugins_blob=get('/wp-json/wp/v2/plugins?status=active',headers)
+          if status==200:
+              try:
+                  plugins_data=json.loads(plugins_blob)
+                  if isinstance(plugins_data,list):
+                      print('ACTIVE_WP_PLUGINS',sorted(str(x.get('plugin','')) for x in plugins_data if isinstance(x,dict)))
+              except ValueError:pass
+          else:
+              print('ACTIVE_WP_PLUGINS_UNAVAILABLE_HTTP',status)
           projects=data['items']
           if projects:
               project_id=int(projects[0]['id'])
-              for suffix in ('/sections','/skills'):
+              for suffix in ('/workspace','/sections','/skills'):
                   measure('/wp-json/nckh/v1/projects/'+str(project_id)+suffix,headers,200)
           else:
               print('No accessible projects for this test account; section/skill timing skipped.')
