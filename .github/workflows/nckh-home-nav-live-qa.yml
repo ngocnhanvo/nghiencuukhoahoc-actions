@@ -52,6 +52,10 @@ jobs:
               if (label,url) not in desktop:raise RuntimeError('Desktop missing '+label)
               if (label,url) not in mobile:raise RuntimeError('Mobile missing '+label)
           if cta_url!='/so-tay':raise RuntimeError('CTA not connected to real notebook')
+          # Hero already IS the introduction: no duplicate dead-feeling menu link.
+          for surface,links in (('desktop',desktop),('mobile',mobile)):
+              if any(label=='Giới thiệu' or href.endswith('#gioi-thieu') for label,href in links):
+                  raise RuntimeError('Redundant introduction link remains in '+surface)
           if any(s in text_only(nav.group(1)).lower() for s in ['sản phẩm','nón bảo hiểm','dịch vụ','tin tức']):
               raise RuntimeError('Legacy nav remained in desktop')
           for path in ('/so-tay','/so-tay?tab=teachers','/so-tay?tab=skills'):
