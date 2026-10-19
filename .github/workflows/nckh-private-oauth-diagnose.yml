@@ -39,7 +39,7 @@ jobs:
           try:conn.retrlines('LIST',info.append)
           except ftplib.all_errors:pass
           folder=next((x for x in info if x.rstrip().endswith(' nckh-private-runtime')),None)
-          folder_private=bool(folder and re.match(r'^drwx------\b',folder))
+          folder_private=bool(folder and re.match(r'^drwx------(?=\s)',folder))
           folder_mode='0700' if folder_private else 'not-confirmed-0700'
           print('Staging OAuth directory exists:',bool(folder))
           print('Staging OAuth directory owner-only mode:',folder_mode)
@@ -48,7 +48,7 @@ jobs:
           try:conn.retrlines('LIST',info.append)
           except ftplib.all_errors:pass
           fileinfo=next((x for x in info if x.rstrip().endswith(' oauth.json')),None)
-          file_private=bool(fileinfo and re.match(r'^-rw-------\b',fileinfo))
+          file_private=bool(fileinfo and re.match(r'^-rw-------(?=\s)',fileinfo))
           print('Private oauth.json exists:',bool(fileinfo))
           print('oauth.json owner-only mode:', '0600' if file_private else 'not-confirmed-0600')
           size=conn.size('oauth.json')
