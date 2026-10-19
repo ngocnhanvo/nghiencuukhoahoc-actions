@@ -1,0 +1,73 @@
+name: NCKH Staging Core HTML Root Isolation (reversible)
+on:
+  issues:
+    types: [opened]
+permissions:
+  contents: read
+concurrency:
+  group: nckh-astro-production-deploy
+  cancel-in-progress: false
+jobs:
+  test:
+    if: >-
+      github.repository == 'ngocnhanvo/nghiencuukhoahoc-actions'
+      && github.event.issue.user.login == 'ngocnhanvo'
+      && github.event.issue.title == '[nckh] Test homepage and notebook root isolation'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      FTP_SERVER: ${{ secrets.FTP_SERVER }}
+      FTP_USERNAME: ${{ secrets.FTP_USERNAME }}
+      FTP_PASSWORD: ${{ secrets.FTP_PASSWORD }}
+    steps:
+      - name: Verify Node renders even if individual root HTML copies disappear
+        shell: bash
+        run: |
+          set -euo pipefail
+          set +x
+          python3 - <<'PY'
+          import ftplib,hashlib,os,urllib.request,urllib.error
+          from urllib.parse import urlparse
+          root='/domains/nghiencuukhoahoc.webnvn.com/public_html'
+          origin='https://nghiencuukhoahoc.webnvn.com'
+          class NoRedirect(urllib.request.HTTPRedirectHandler):
+              def redirect_request(self,*args,**kwargs):return None
+          opener=urllib.request.build_opener(NoRedirect)
+          def probe(path):
+              req=urllib.request.Request(origin+path,method='GET',headers={'Cache-Control':'no-cache','User-Agent':'NCKH-Root-Isolation-Reversible/1'})
+              try:
+                  with opener.open(req,timeout=15) as response:
+                      return response.status, response.headers.get('Content-Type','').split(';')[0],hashlib.sha256(response.read(250000)).hexdigest()
+              except urllib.error.HTTPError as e:
+                  e.close();return e.code,'',None
+          u=os.environ['FTP_SERVER'];p=urlparse(u if '://' in u else 'ftps://'+u)
+          ftp=ftplib.FTP_TLS();ftp.connect(p.hostname,p.port or 21,timeout=25);ftp.login(os.environ['FTP_USERNAME'],os.environ['FTP_PASSWORD']);ftp.prot_p()
+          results=[]
+          try:
+              for relative,url in (('', '/'),('so-tay','/so-tay/')):
+                  directory=root+('/'+relative if relative else '')
+                  ftp.cwd(directory)
+                  baseline=probe(url)
+                  if baseline[0]!=200 or baseline[1]!='text/html':raise RuntimeError('Baseline unavailable for '+url)
+                  original='index.html'
+                  held='.nckh-core-isolation-20261019.html'
+                  names={x.rsplit('/',1)[-1] for x in ftp.nlst()}
+                  if original not in names or held in names:raise RuntimeError('Unsafe current FTP state for '+url)
+                  moved=False
+                  try:
+                      ftp.rename(original,held)
+                      moved=True
+                      isolated=probe(url)
+                      print('ISOLATION',url,'status',isolated[0],'same_content',isolated==baseline)
+                      results.append((url,isolated==baseline))
+                  finally:
+                      if moved:
+                          ftp.rename(held,original)
+                          print('RESTORED',url)
+                  confirmed=probe(url)
+                  if confirmed!=baseline:raise RuntimeError('Restore mismatch on '+url)
+          finally:
+              ftp.quit()
+          if not all(ok for _,ok in results) or len(results)!=2:raise RuntimeError('At least one route needs root HTML; do not clean')
+          print('PASS both homepage and notebook work with root HTML copy temporarily absent')
+          PY
