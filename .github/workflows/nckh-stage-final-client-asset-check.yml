@@ -1,0 +1,59 @@
+name: NCKH Staging Canonical Client Assets Final Check
+on:
+  issues:
+    types: [opened]
+permissions:
+  contents: read
+jobs:
+  verify:
+    if: >-
+      github.repository == 'ngocnhanvo/nghiencuukhoahoc-actions'
+      && github.event.issue.user.login == 'ngocnhanvo'
+      && github.event.issue.title == '[nckh] Verify client assets after cleanup'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      FTP_SERVER: ${{ secrets.FTP_SERVER }}
+      FTP_USERNAME: ${{ secrets.FTP_USERNAME }}
+      FTP_PASSWORD: ${{ secrets.FTP_PASSWORD }}
+    steps:
+      - name: Fetch canonical client CSS JS and compare exact bytes over HTTPS
+        shell: bash
+        run: |
+          set -euo pipefail
+          set +x
+          python3 - <<'PY'
+          import ftplib,io,hashlib,os,re,urllib.request
+          from urllib.parse import urlparse
+          root='/domains/nghiencuukhoahoc.webnvn.com/public_html/client/_astro'
+          p=os.environ['FTP_SERVER'];u=urlparse(p if '://' in p else 'ftps://'+p)
+          ftp=ftplib.FTP_TLS();ftp.connect(u.hostname,u.port or 21,timeout=25)
+          ftp.login(os.environ['FTP_USERNAME'],os.environ['FTP_PASSWORD']);ftp.prot_p()
+          try:
+              ftp.cwd(root)
+              names=[n.rsplit('/',1)[-1] for n in ftp.nlst()]
+              for suffix in ('.css','.js'):
+                  found=False
+                  for name in sorted(names):
+                      if not name.endswith(suffix) or not re.fullmatch(r'[a-zA-Z0-9_.-]+',name):continue
+                      try:
+                          size=ftp.size(name)
+                          if not size or size>700000:continue
+                          buffer=io.BytesIO()
+                          ftp.retrbinary('RETR '+name,buffer.write,blocksize=8192)
+                          local=buffer.getvalue()
+                          req=urllib.request.Request('https://nghiencuukhoahoc.webnvn.com/_astro/'+name,
+                              headers={'Cache-Control':'no-cache','User-Agent':'NCKH-PostCleanup-AssetHash'})
+                          with urllib.request.urlopen(req,timeout=18) as remote:
+                              data=remote.read(800000)
+                              match=data==local
+                              print('ASSET',suffix,'HTTP',remote.status,'EXACT_CLIENT_BYTES',match,'content_type',remote.headers.get('Content-Type','').split(';')[0])
+                              if not match or remote.status!=200:raise RuntimeError('Compiled frontend asset differs from canonical client')
+                          found=True
+                          break
+                      except ftplib.all_errors:continue
+                  if not found:raise RuntimeError('No compiled '+suffix+' asset verified')
+          finally:
+              ftp.quit()
+          print('PASS compiled CSS and JS served from client without root duplicate')
+          PY
