@@ -1,0 +1,45 @@
+name: NCKH public sample UI staging preview GET-only
+on:
+  issues:
+    types: [opened]
+permissions:
+  contents: read
+jobs:
+  preview:
+    if: >-
+      github.repository == 'ngocnhanvo/nghiencuukhoahoc-actions'
+      && github.event.issue.user.login == 'ngocnhanvo'
+      && github.event.issue.title == '[nckh] Probe staging UI preview'
+    runs-on: ubuntu-latest
+    timeout-minutes: 4
+    steps:
+      - name: Verify sample-only staged preview without credentials
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import urllib.request
+          url='https://nghiencuukhoahoc.webnvn.com/xem-truoc'
+          req=urllib.request.Request(url,headers={'Accept':'text/html','User-Agent':'NCKH-Public-Sample-UI-ReadOnly/1.0'})
+          with urllib.request.urlopen(req,timeout=30) as response:
+              status=response.status
+              ctype=response.headers.get('Content-Type','')
+              page=response.read(350000).decode('utf-8','replace')
+          required=[
+              'BẢN XEM TRƯỚC',
+              'data-view="student"',
+              'data-view="teacher"',
+              'data-view="admin"',
+              'data-subview="journal"',
+              'data-subview="skills"',
+              'Mở Admin duyệt giáo viên',
+              'không kết nối tài khoản thật',
+          ]
+          matched=all(token in page for token in required)
+          print('Staging preview HTTP:',status)
+          print('HTML content-type:', 'html' in ctype.lower())
+          print('All three role views and demo boundary present:',matched)
+          if not (status==200 and 'html' in ctype.lower() and matched):
+              raise SystemExit('Preview not correctly served; no live UI claim.')
+          print('PASS sample-only UI preview on staging. GET only; no production or WordPress modification.')
+          PY
