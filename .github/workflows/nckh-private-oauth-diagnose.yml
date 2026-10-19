@@ -65,7 +65,23 @@ jobs:
               web=doc.get('web')
               web=web if isinstance(web,dict) else {}
               key=doc.get('nckh_session_key','')
-              key_ok=isinstance(key,str) and bool(re.fullmatch(r'[A-Za-z0-9_-]{43}',key)) and len(base64.urlsafe_b64decode(key+'='))==32
+              # Never show the key, or even its prefix/suffix. Print only shape booleans.
+              key_is_string=isinstance(key,str)
+              key_is_present='nckh_session_key' in doc
+              key_length_ok=key_is_string and len(key)==43
+              key_chars_ok=key_is_string and bool(re.fullmatch(r'[A-Za-z0-9_-]+',key))
+              key_whitespace=key_is_string and key!=key.strip()
+              key_decoded_ok=False
+              if key_length_ok and key_chars_ok:
+                  try:key_decoded_ok=len(base64.urlsafe_b64decode(key+'='))==32
+                  except (ValueError,base64.binascii.Error):pass
+              key_ok=key_is_present and key_length_ok and key_chars_ok and key_decoded_ok
+              print('Session key field exists:',key_is_present)
+              print('Session key is a string:',key_is_string)
+              print('Session key length is exactly 43:',key_length_ok)
+              print('Session key alphabet is base64url:',key_chars_ok)
+              print('Session key includes outer whitespace:',key_whitespace)
+              print('Session key decodes to exactly 32 bytes:',key_decoded_ok)
               client_ok=web.get('client_id')=='47081238005-uoj2r9oa0khsoe7jhd69jlabk8hkf3cr.apps.googleusercontent.com'
               secret_ok=isinstance(web.get('client_secret'),str) and len(web['client_secret'])>10
               redirect_ok='https://nghiencuukhoahoc.webnvn.com/api/auth/google/callback' in web.get('redirect_uris',[]) if isinstance(web.get('redirect_uris'),list) else False
