@@ -39,6 +39,7 @@ jobs:
                 'logo_keys',sorted(raw_logo.keys()) if isinstance(raw_logo,dict) else [],
                 'logo_host',urllib.parse.urlparse(str(raw_logo.get('url') or '')).hostname if isinstance(raw_logo,dict) else 'none')
           logo=str((raw_logo or {}).get('url') or '') if isinstance(raw_logo,dict) else ''
+          print('WP_PUBLIC_LOGO_VALUE',repr(logo[:200]))
           if not logo:
               print('WP_PUBLISHED_MEDIA_EMPTY_USE_HOME_DIAGNOSTIC',True)
           home_html=get(homepage+'/')[0].decode('utf8','replace')
