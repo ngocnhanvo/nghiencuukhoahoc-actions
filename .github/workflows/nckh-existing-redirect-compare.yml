@@ -1,0 +1,46 @@
+name: NCKH Compare Existing SSR Redirect and Google OAuth (read-only)
+on:
+  issues:
+    types: [opened]
+permissions:
+  contents: read
+jobs:
+  compare:
+    if: >-
+      github.repository == 'ngocnhanvo/nghiencuukhoahoc-actions'
+      && github.event.issue.user.login == 'ngocnhanvo'
+      && github.event.issue.title == '[nckh] Compare existing SSR redirect handlers'
+    runs-on: ubuntu-latest
+    timeout-minutes: 4
+    steps:
+      - name: Request staging statuses only without redirects or cookies
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import time,urllib.request,urllib.error
+          base='https://nghiencuukhoahoc.webnvn.com'
+          class NoRedirect(urllib.request.HTTPRedirectHandler):
+              def redirect_request(self,*args,**kwargs):return None
+          opener=urllib.request.build_opener(NoRedirect)
+          paths=('/api/auth/me','/api/cart/redirect?cartKey=demo-test',
+                 '/api/auth/google/callback?error=access_denied',
+                 '/api/auth/google/start')
+          for urlpath in paths:
+              label=urlpath.split('?')[0]
+              req=urllib.request.Request(base+urlpath,headers={
+                 'Cache-Control':'no-cache',
+                 'User-Agent':'NCKH-Response-Type-Isolation/1.0'
+              },method='GET')
+              started=time.monotonic()
+              try:
+                  with opener.open(req,timeout=8) as r:
+                      status=r.status; ctype=r.headers.get('Content-Type','').split(';')[0]
+              except urllib.error.HTTPError as e:
+                  status=e.code; ctype=e.headers.get('Content-Type','').split(';')[0]; e.close()
+              except Exception as e:
+                  print('ROUTE',label,'ERROR',type(e).__name__,'elapsed_s',round(time.monotonic()-started,2))
+                  continue
+              print('ROUTE',label,'status',status,'type',ctype,'elapsed_s',round(time.monotonic()-started,2))
+          print('No Location, Set-Cookie, private content or OAuth state logged')
+          PY
