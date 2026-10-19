@@ -41,16 +41,18 @@ jobs:
           logo=str((raw_logo or {}).get('url') or '') if isinstance(raw_logo,dict) else ''
           if not logo:
               print('WP_PUBLISHED_MEDIA_EMPTY_USE_HOME_DIAGNOSTIC',True)
+          home_html=get(homepage+'/')[0].decode('utf8','replace')
+          home_brandbar=home_html.split('id="header-brandbar"',1)
+          if len(home_brandbar)<2:raise RuntimeError('Public homepage brandbar missing')
+          home_img=re.search(r'<img\b[^>]*>',home_brandbar[1],re.S|re.I)
+          if not home_img:raise RuntimeError('Homepage brand image missing')
+          home_src=re.search(r'\bsrc="([^"]+)"',home_img.group(0))
+          if not home_src:raise RuntimeError('Homepage brand image src missing')
+          home_logo=html.unescape(home_src.group(1))
+          print('PUBLIC_HOME_LOGO_SRC',home_logo)
           if not logo.startswith(wp+'/wp-content/uploads/'):
               raise RuntimeError('WordPress live brand logo missing or unsafe; refusing to approve fallback E')
           print('WP_PUBLISHED_LOGO_PRESENT',bool(logo))
-          home_html=get(homepage+'/')[0].decode('utf8','replace')
-          home_img=re.search(r'<a\\b(?=[^>]*aria-label="Về trang chủ")[^>]*>(.*?)</a>',home_html,re.S|re.I)
-          if home_img:
-              img=re.search(r'<img\\b[^>]*>',home_img.group(1),re.S|re.I)
-              if img:
-                  src=re.search(r'\\bsrc="([^"]+)"',img.group(0))
-                  print('PUBLIC_HOME_LOGO_SRC',html.unescape(src.group(1)) if src else 'missing')
           for path in ('/so-tay','/xem-truoc'):
               text=get(homepage+path)[0].decode('utf8','replace')
               anchor=re.search(r'<a\b(?=[^>]*\bclass="[^"]*nckh-app-brand)[^>]*>(.*?)</a>',text,re.S|re.I)
