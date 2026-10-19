@@ -28,6 +28,7 @@ jobs:
             ('/api/auth/google/start',200,'https://accounts.google.com/o/oauth2/v2/auth',True),
             ('/api/auth/google/callback?error=access_denied',200,'/so-tay?auth=failed',True),
             ('/api/nckh/v1/projects',401,None,False),
+            ('/api/nckh-runtime-probe?variant=plain',404,None,False),
           ]
           errors=0
           for path,expected,marker,need_html in checks:
