@@ -33,6 +33,7 @@ jobs:
               'php-ci':'nckh-php-offline-check.yml',
               'astro-ci':'nckh-notebook-feature-check.yml',
               'php-stage':'nckh-ai-staging-deploy.yml',
+              'research-stage':'nckh-notebook-staging-deploy.yml',
               'astro-stage':'nckh-astro-github-staging-deploy.yml',
           }
           task=doc.get('task')
