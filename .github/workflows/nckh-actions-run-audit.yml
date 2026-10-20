@@ -70,8 +70,8 @@ jobs:
                   if status=='completed' and run.get('conclusion')=='skipped':skipped+=1
                   title=run.get('display_title')
                   source=run.get('path','').replace('@main','')
-                  if title in titles and source.endswith(titles[title]) and
-                      run.get('created_at','')>='2026-10-20T00:30:00Z':
+                  if (title in titles and source.endswith(titles[title])
+                      and run.get('created_at','')>='2026-10-20T00:30:00Z'):
                       found[title].append(run)
               if len(rows)<100:break
           report=[
