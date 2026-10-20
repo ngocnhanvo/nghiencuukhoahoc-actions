@@ -35,6 +35,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          php -l source/wp-content/mu-plugins/nckh-rubric.php
+          php -l source/tests/nckh-rubric.test.php
+          php source/tests/nckh-rubric.test.php
           php -l source/wp-content/mu-plugins/nckh-invite-email.php
           php -l source/tests/nckh-invite-email.test.php
           php source/tests/nckh-invite-email.test.php
@@ -237,6 +240,74 @@ jobs:
               if hashlib.sha256(live.getvalue()).digest()!=digest:
                   raise RuntimeError('Published file checksum mismatch')
               print('PASS: teacher invite mail integration (safe OFF default) staged only on NCKH API subdomain.')
+              if backed:print('Previous plugin backed up outside public_html.')
+          except Exception:
+              try:ftp.delete(target)
+              except ftplib.all_errors:pass
+              if backed:ftp.rename(previous,target)
+              raise
+          finally:
+              try:ftp.quit()
+              except ftplib.all_errors:pass
+          PY
+      - name: Upload ONLY disabled-official rubric drafts to staging with rollback
+        shell: bash
+        run: |
+          set -euo pipefail
+          set +x
+          python3 - <<'PY'
+          import os,ftplib,hashlib,io,time,sys
+          from urllib.parse import urlparse
+          source='source/wp-content/mu-plugins/nckh-rubric.php'
+          target='public_html/wp-content/mu-plugins/nckh-rubric.php'
+          base='/domains/api-nghiencuukhoahoc.webnvn.com'
+          content=open(source,'rb').read()
+          if not all(x in content for x in (
+            b"private const HOST='api-nghiencuukhoahoc.webnvn.com'",
+            b"NCKH_Rubric::boot();",
+            b"nckh_rubric_draft_version"
+          )):raise SystemExit('STOP: unexpected staging rubric plugin source')
+          for key in ('FTP_SERVER','FTP_USERNAME','FTP_PASSWORD'):
+              if not os.environ.get(key):raise SystemExit('STOP: staging FTPS secret missing')
+          endpoint=os.environ['FTP_SERVER']
+          url=urlparse(endpoint if '://' in endpoint else 'ftps://'+endpoint)
+          ftp=ftplib.FTP_TLS()
+          ftp.connect(url.hostname,url.port or 21,timeout=22)
+          ftp.login(os.environ['FTP_USERNAME'],os.environ['FTP_PASSWORD'])
+          ftp.prot_p()
+          ftp.cwd(base)
+          if 'api-nghiencuukhoahoc.webnvn.com' not in ftp.pwd():
+              raise SystemExit('STOP: staging directory mismatch')
+          backups='nckh-config-backups'
+          try:ftp.mkd(backups)
+          except ftplib.error_perm as e:
+              if not str(e).startswith('550'):raise
+          stamp=str(int(time.time()))
+          staged=f'{backups}/nckh-rubric-stage-{stamp}.php.txt'
+          previous=f'{backups}/nckh-rubric-previous-{stamp}.php.txt'
+          old=None
+          try:
+              buf=io.BytesIO();ftp.retrbinary('RETR '+target,buf.write);old=buf.getvalue()
+          except ftplib.error_perm as e:
+              if not str(e).startswith('550'):raise
+          digest=hashlib.sha256(content).digest()
+          if old is not None and hashlib.sha256(old).digest()==digest:
+              print('PASS: NCKH rubric plugin already present with expected checksum.')
+              ftp.quit();sys.exit(0)
+          ftp.storbinary('STOR '+staged,io.BytesIO(content))
+          check=io.BytesIO();ftp.retrbinary('RETR '+staged,check.write)
+          if hashlib.sha256(check.getvalue()).digest()!=digest:
+              raise RuntimeError('Staged file checksum mismatch')
+          backed=False
+          try:
+              if old is not None:
+                  ftp.rename(target,previous)
+                  backed=True
+              ftp.rename(staged,target)
+              live=io.BytesIO();ftp.retrbinary('RETR '+target,live.write)
+              if hashlib.sha256(live.getvalue()).digest()!=digest:
+                  raise RuntimeError('Published file checksum mismatch')
+              print('PASS: draft-only rubric integration (never official without approval) staged only on NCKH API subdomain.')
               if backed:print('Previous plugin backed up outside public_html.')
           except Exception:
               try:ftp.delete(target)
