@@ -54,6 +54,7 @@ jobs:
               '[nckh] Deploy Astro github to staging':'.github/workflows/nckh-astro-github-staging-deploy.yml'
           }
           found={key:[] for key in titles}
+          cleanup_runs=[]
           total=None
           skipped=0
           seen=0
@@ -70,12 +71,18 @@ jobs:
                   if status=='completed' and run.get('conclusion')=='skipped':skipped+=1
                   title=run.get('display_title')
                   source=run.get('path','').replace('@main','')
+                  if source.endswith('nckh-delete-skipped-runs.yml'):
+                      cleanup_runs.append(run)
                   if (title in titles and source.endswith(titles[title])
                       and run.get('created_at','')>='2026-10-20T00:30:00Z'):
                       found[title].append(run)
               if len(rows)<100:break
+          cleanup_runs.sort(key=lambda r:r.get('created_at',''),reverse=True)
+          latest_cleaner=cleanup_runs[0] if cleanup_runs else None
+          cleaner_line=('Cleanup workflow: [run '+str(latest_cleaner.get('id'))+']('+str(latest_cleaner.get('html_url'))+') — '+str(latest_cleaner.get('status'))+'/'+str(latest_cleaner.get('conclusion')) if latest_cleaner else 'Cleanup workflow run: not found in recent 2,500 runs')
           report=[
               '## NCKH Actions audit (automatic read-only report)',
+              cleaner_line,
               'Total runs currently reported by API: **'+str(total)+'**. Scanned: **'+str(seen)+'**; skipped completed: **'+str(skipped)+'**; noncompleted: **'+str(active)+'**.',
               'Tracked workflow configuration files: **'+str(len(flows))+'**; workflows listening for `issues`: **'+str(len(issues_listening))+'**.',
               '',
