@@ -5,7 +5,6 @@ on:
     paths:
       - '.github/workflows/nckh-notebook-feature-check.yml'
   workflow_dispatch:
-  workflow_dispatch:
   issues:
     types: [opened]
 permissions:
