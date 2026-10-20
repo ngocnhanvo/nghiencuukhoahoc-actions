@@ -37,6 +37,9 @@ jobs:
           php -l source/wp-content/mu-plugins/nckh-article-editor.php
           php -l source/tests/nckh-article-editor.test.php
           php source/tests/nckh-article-editor.test.php
+          php -l source/wp-content/mu-plugins/nckh-invite-email.php
+          php -l source/tests/nckh-invite-email.test.php
+          php source/tests/nckh-invite-email.test.php
           php -l source/wp-content/mu-plugins/nckh-research-api.php
           php -l source/tests/nckh-research-api.test.php
           php source/tests/nckh-research-api.test.php
