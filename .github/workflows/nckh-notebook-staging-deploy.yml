@@ -35,6 +35,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          php -l source/wp-content/mu-plugins/nckh-invite-email.php
+          php -l source/tests/nckh-invite-email.test.php
+          php source/tests/nckh-invite-email.test.php
           php -l source/wp-content/mu-plugins/nckh-research-api.php
           php source/tests/nckh-research-api.test.php
           php -l source/wp-content/mu-plugins/nckh-article-editor.php
