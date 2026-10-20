@@ -1,5 +1,6 @@
 name: NCKH Astro github branch staging-only deployment
 on:
+  workflow_dispatch:
   issues:
     types: [opened]
 permissions:
@@ -11,8 +12,11 @@ jobs:
   stage_dev:
     if: >-
       github.repository == 'ngocnhanvo/nghiencuukhoahoc-actions'
-      && github.event.issue.user.login == 'ngocnhanvo'
-      && github.event.issue.title == '[nckh] Deploy Astro github to staging'
+      && github.ref == 'refs/heads/main'
+      && (github.event_name == 'workflow_dispatch'
+          || (github.event_name == 'issues'
+              && github.event.issue.user.login == 'ngocnhanvo'
+              && github.event.issue.title == '[nckh] Deploy Astro github to staging'))
     runs-on: ubuntu-latest
     timeout-minutes: 45
     env:
