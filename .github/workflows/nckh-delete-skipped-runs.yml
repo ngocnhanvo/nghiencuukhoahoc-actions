@@ -1,4 +1,4 @@
-name: NCKH prune completed skipped Actions runs (preserve active & CI evidence)
+name: NCKH clean all completed Actions through Oct 19 (preserve active)
 on:
   push:
     branches: [main]
@@ -6,7 +6,7 @@ on:
       - '.github/workflows/nckh-delete-skipped-runs.yml'
   workflow_dispatch:
   schedule:
-    - cron: '25 */2 * * *'
+    - cron: '15 * * * *'
 permissions:
   actions: write
   contents: read
@@ -32,11 +32,11 @@ jobs:
           set -euo pipefail
           python3 -m py_compile scripts/nckh-delete-skipped-runs.py
           test -f docs/nckh-protected-action-runs-2026-10-19.json
-          grep -Fq 'current.get("conclusion") != "skipped"' scripts/nckh-delete-skipped-runs.py
+          grep -Fq 'CUTOFF = "2026-10-19T16:59:59Z"' scripts/nckh-delete-skipped-runs.py
           grep -Fq 'current.get("status") != "completed"' scripts/nckh-delete-skipped-runs.py
-          grep -Fq 'len(manifest["protected_run_ids"]) < 126' scripts/nckh-delete-skipped-runs.py
-          echo "PASS: this workflow is restricted to completed/skipped runs; active and useful CI preserved."
-      - name: Remove only final skipped runs; publish protected cleanup count
+          grep -Fq 'len(manifest.get("protected_run_ids", [])) < 126' scripts/nckh-delete-skipped-runs.py
+          echo "PASS: only completed runs created through Oct 19 Vietnam; currently active and newer protected."
+      - name: Delete final Oct 19-and-earlier runs; report verified counts
         shell: bash
         run: |
           set -euo pipefail
