@@ -72,11 +72,11 @@ jobs:
           if not re.fullmatch(r'[A-Za-z0-9]{8,20}', nonce):
               raise RuntimeError('Unable to acquire the WordPress REST nonce')
 
-          print('Authenticated staging admin; checking 4 SSE events, zero provider calls.')
+          print('Authenticated staging admin; checking four 32-KiB-padded SSE events without AI calls.')
           request_start = time.monotonic()
           try:
               response = open_staging(
-                  '/wp-json/nckh/v1/ai/stream-probe', b'{}',
+                  '/wp-json/nckh/v1/ai/stream-probe', b'{"padding_probe":true}',
                   {'Content-Type': 'application/json',
                    'Accept': 'text/event-stream',
                    'Accept-Encoding': 'identity',
@@ -95,10 +95,10 @@ jobs:
                   raise RuntimeError('Probe endpoint was not served as SSE')
               current = 'message'
               while len(events) < 4 or not completed:
-                  line = response.readline(16000)
+                  line = response.readline(40000)
                   if not line:
                       break
-                  if len(line) >= 16000:
+                  if len(line) >= 40000:
                       raise RuntimeError('Unexpected overlong SSE line')
                   part = line.decode('utf-8', 'replace').strip()
                   if part.startswith('event:'):
@@ -126,7 +126,7 @@ jobs:
           print('Server SSE span:', server_span, 'ms')
           print('Runner receive span:', wire_span, 'ms')
           print('Content-Encoding:', content_encoding)
-          print('Wire result:', diagnosis)
+          print('Wire result (32KiB SSE comment padding):', diagnosis)
           print('Scope: staging WordPress -> GitHub runner only; Astro browser not tested.')
           with open(os.environ['GITHUB_STEP_SUMMARY'], 'a', encoding='utf-8') as output:
               output.write('### NCKH staging no-quota SSE wire timing\n\n')
@@ -134,7 +134,7 @@ jobs:
               output.write(f'| WordPress server span | {server_span} ms |\n')
               output.write(f'| GitHub runner arrival span | {wire_span} ms |\n')
               output.write(f'| HTTP Content-Encoding | {content_encoding} |\n')
-              output.write(f'| Diagnosis | {diagnosis} |\n\n')
+              output.write(f'| 32 KiB SSE-padding diagnosis | {diagnosis} |\n\n')
               output.write('No Gemini/Groq request, no notebook contents, no AI daily quota consumed. '
                            'This does not test the Astro Node-to-browser path.\n')
           PY
