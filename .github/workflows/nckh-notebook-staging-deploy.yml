@@ -192,10 +192,10 @@ jobs:
           base='/domains/api-nghiencuukhoahoc.webnvn.com'
           content=open(source,'rb').read()
           if not all(x in content for x in (
-            b"private const HOST = 'api-nghiencuukhoahoc.webnvn.com'",
+            b"private const HOST='api-nghiencuukhoahoc.webnvn.com'",
             b"NCKH_Invite_Email::boot();",
             b"NCKH_INVITE_EMAIL_ENABLED"
-          )):raise SystemExit('STOP: unexpected staging article plugin source')
+          )):raise SystemExit('STOP: unexpected staging invite email plugin source')
           for key in ('FTP_SERVER','FTP_USERNAME','FTP_PASSWORD'):
               if not os.environ.get(key):raise SystemExit('STOP: staging FTPS secret missing')
           endpoint=os.environ['FTP_SERVER']
