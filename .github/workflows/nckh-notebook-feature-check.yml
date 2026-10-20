@@ -82,6 +82,6 @@ jobs:
           pnpm exec tsc --project tsconfig.nckh.json --pretty false
       - name: Run focused NCKH API client tests
         working-directory: source
-        run: pnpm exec vitest run src/lib/nckh/notebookClient.test.ts src/lib/nckh/aiStreamClient.test.ts src/lib/nckh/aiConversation.test.ts src/lib/nckh/astroTransportProbe.test.ts src/lib/nckh/googleOidc.test.ts src/lib/nckh/serverWp.test.ts src/lib/nckh/serverSession.test.ts src/lib/nckh/researchProgress.test.ts src/lib/nckh/notebookExport.test.ts src/lib/nckh/skillTimeline.test.ts src/lib/nckh/autosavePolicy.test.ts src/lib/nckh/pageLoading.test.ts src/lib/nckh/privateRuntime.test.ts src/lib/nckh/notebookUiCss.test.ts src/lib/nckh/publicBrand.test.ts src/lib/nckh/appDesignConsistency.test.ts
+        run: pnpm exec vitest run src/lib/nckh/notebookClient.test.ts src/lib/nckh/aiStreamClient.test.ts src/lib/nckh/aiConversation.test.ts src/lib/nckh/astroTransportProbe.test.ts src/lib/nckh/googleOidc.test.ts src/lib/nckh/serverWp.test.ts src/lib/nckh/serverSession.test.ts src/lib/nckh/researchProgress.test.ts src/lib/nckh/notebookExport.test.ts src/lib/nckh/skillTimeline.test.ts src/lib/nckh/autosavePolicy.test.ts src/lib/nckh/pageLoading.test.ts src/lib/nckh/privateRuntime.test.ts src/lib/nckh/notebookUiCss.test.ts src/lib/nckh/homeNavigation.test.ts src/lib/nckh/publicBrand.test.ts src/lib/nckh/appDesignConsistency.test.ts
       - name: Staging only assertion
         run: echo "No FTP, no staging writes, no OAuth login, no Astro master merge."
