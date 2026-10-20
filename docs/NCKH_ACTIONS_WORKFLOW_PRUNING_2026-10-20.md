@@ -61,3 +61,15 @@
 ## Recovery
 
 GitHub source history preserves every removed definition at previous Actions `main` commit `605a7ee02171eb146d8aad91a3d1bc90b1525937`; restore only a required workflow from that SHA after review.
+
+
+## Historical run cleanup: explicit approval on 20 Oct 2026
+
+- User authorized removing **all completed Actions runs created through 19 Oct 2026 23:59:59 Asia/Ho_Chi_Minh** (UTC `2026-10-19T16:59:59Z`) in repository `ngocnhanvo/nghiencuukhoahoc-actions`; includes success, failure, skipped, and cancelled conclusions, rather than only skipped runs.
+- **Never delete:** any currently `queued`, `waiting`, `requested`, `pending`, `in_progress` run; or any run dated 20 Oct 2026 or later (Vietnam time). Previous frozen snapshot of 126 originally queued runs remains on disk for provenance but does not indefinitely exempt them after completion, in accordance with the new explicit instruction.
+- Script commit `130a3d3ff162e80cd3e489fc60a1f6cc22c4dbc7`: `scripts/nckh-delete-skipped-runs.py` now inventories once, rechecks completion and creation timestamp immediately before each deletion, then emits precise count/partial continuation to existing issue #302 and GitHub Step Summary. It limits deletion rates and respects GitHub API throttling. The existing filename is retained to avoid workflow trigger disruption.
+- Workflow commit `cc44b4a6b462576990e0d8b5a14ca1b4f9cd1ee3`: `.github/workflows/nckh-delete-skipped-runs.yml` self-triggered on push, hourly schedule with serialized concurrency and no cancellation of running cleanup jobs; automatically disables itself after all eligible historical completed runs are gone.
+- Independent read-only audit commit `2a40998437416dffdff50698b241b55248bb1ee5` posted to issue #302: **8,242** total Actions runs versus previous **8,974** (net decrease **732**, actual deletion count not independently broken down); latest newly requested cleanup [run 39354641502](https://github.com/ngocnhanvo/nghiencuukhoahoc-actions/actions/runs/39354641502) was **Pending** when sampled. This is **NOT YET a completed historical purge**; do not claim the backlog is empty until runner summary and final API count confirm it.
+- This maintenance is **Actions repo only**. Astro `github`, PHP `master`, production and staging FTP contents were not changed by the cleanup.
+
+Code mode: `auto`.
