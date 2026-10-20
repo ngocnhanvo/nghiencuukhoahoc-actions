@@ -1,5 +1,6 @@
 name: Deploy NCKH notebook backend to staging only
 on:
+  workflow_dispatch:
   issues:
     types: [opened]
 permissions:
@@ -9,8 +10,11 @@ jobs:
   stage_notebook:
     if: >-
       github.repository == 'ngocnhanvo/nghiencuukhoahoc-actions'
-      && github.event.issue.user.login == 'ngocnhanvo'
-      && github.event.issue.title == '[nckh] Deploy notebook staging only'
+      && github.ref == 'refs/heads/main'
+      && (github.event_name == 'workflow_dispatch'
+          || (github.event_name == 'issues'
+              && github.event.issue.user.login == 'ngocnhanvo'
+              && github.event.issue.title == '[nckh] Deploy notebook staging only'))
     runs-on: ubuntu-latest
     timeout-minutes: 8
     env:
