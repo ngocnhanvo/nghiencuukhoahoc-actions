@@ -31,7 +31,17 @@ for (const page of pages) {
       .map(x => x.split('/').at(-1))
       .filter(x=>knownMissing.has(x))
   )];
-  const row = {id:page.id, slug:page.slug, key, title, knownMissingImageNames:refs};
+  const sourceLower = source.toLowerCase();
+  const markerTerms = ['xuongmunonbaohiem','blue sea','mũ bảo hiểm','mũ nón bảo hiểm','nón bảo hiểm','pse','tieu-chuan-iso-2015','nghiên cứu khoa học','eduresearch'];
+  const markerHits = markerTerms.filter(term => sourceLower.includes(term.toLowerCase()));
+  const textPreview = String(page.content?.rendered || '')
+    .replace(/<[^>]*>/g, ' ').replace(/&[a-z]+;/gi, ' ').replace(/\\s+/g,' ').trim().slice(0,400);
+  const row = {
+    id:page.id, slug:page.slug, key, title, knownMissingImageNames:refs,
+    markerHits, contentPreview: textPreview,
+    acfKeys: Object.keys(page.acf || {}).slice(0,35),
+    contentChars: String(page.content?.rendered || '').length
+  };
   console.log(JSON.stringify(row));
   if (refs.length) affected.push(row);
 }
