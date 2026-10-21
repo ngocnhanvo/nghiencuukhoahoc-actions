@@ -54,7 +54,7 @@ jobs:
             exit 1
           fi
           printf 'Dependencies installed.\n\n' >> "$report"
-          if pnpm exec vitest run scripts/sync-seo-files.nckh.test.ts src/lib/wordpress/pages/ssrActionAudit.test.ts > "${RUNNER_TEMP}/nckh-page-cache.log" 2>&1; then
+          if pnpm exec vitest run scripts/sync-seo-files.nckh.test.ts src/lib/wordpress/pages/ssrActionAudit.test.ts src/lib/wordpress/pages/getData.image-errors.test.ts > "${RUNNER_TEMP}/nckh-page-cache.log" 2>&1; then
             printf 'NCKH WordPress SEO and Pages regression tests: **PASS**.\n' >> "$report"
           else
             printf 'NCKH WordPress SEO and Pages regression tests: **FAIL**.\n' >> "$report"
