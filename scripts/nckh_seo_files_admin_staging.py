@@ -99,8 +99,9 @@ def smoke_save() -> None:
             page.goto(target, wait_until="domcontentloaded", timeout=50000)
             if not page.locator('input[name="action"][value="esc_seo_files_save"]').count():
                 raise RuntimeError("Staging SEO Files admin not available with authenticated account")
-            if SITE not in page.locator(".esc-seo-files").inner_text():
-                raise RuntimeError("Admin still displays unexpected SEO hostname")
+            live_link = page.locator(".esc-seo-files a", has_text="Xem trên website").first
+            if live_link.count() != 1 or live_link.get_attribute("href") != SITE + "/sitemap.xml":
+                raise RuntimeError("WordPress SEO Files link targets wrong frontend origin")
             # User's exact one-URL manual XML as shown in the bug report.
             page.locator('input[name="sitemap_mode"][value="manual"]').check()
             page.locator("#esc-seo-xml").fill(public_xml)
