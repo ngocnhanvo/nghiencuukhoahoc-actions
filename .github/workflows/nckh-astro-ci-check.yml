@@ -1,5 +1,6 @@
 name: NCKH Astro code validation only
 on:
+  workflow_dispatch:
   issues:
     types: [opened]
 permissions:
@@ -7,7 +8,12 @@ permissions:
   issues: write
 jobs:
   check:
-    if: github.repository == 'ngocnhanvo/nghiencuukhoahoc-actions' && github.event.issue.title == '[nckh] Check Astro github'
+    if: >-
+      github.repository == 'ngocnhanvo/nghiencuukhoahoc-actions'
+      && (github.event_name == 'workflow_dispatch'
+          || (github.event_name == 'issues'
+              && github.event.issue.user.login == 'ngocnhanvo'
+              && github.event.issue.title == '[nckh] Check Astro github'))
     runs-on: ubuntu-latest
     timeout-minutes: 13
     env:
@@ -24,7 +30,10 @@ jobs:
           done_check() {
             rc=$?
             printf '\nJob validation exit code: %s.\n' "$rc" >> "$report"
-            gh api -X POST "repos/${GITHUB_REPOSITORY}/issues/${{ github.event.issue.number }}/comments" -F body=@"$report" >/dev/null || true
+            cat "$report" >> "$GITHUB_STEP_SUMMARY"
+            if [ "${{ github.event_name }}" = "issues" ]; then
+              gh api -X POST "repos/${GITHUB_REPOSITORY}/issues/${{ github.event.issue.number }}/comments" -F body=@"$report" >/dev/null || true
+            fi
           }
           trap done_check EXIT
           if [ -z "${SOURCE_PAT:-}" ]; then echo 'SOURCE_REPO_PAT not configured' >> "$report";exit 1;fi
