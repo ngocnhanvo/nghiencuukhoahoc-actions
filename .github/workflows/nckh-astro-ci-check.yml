@@ -31,6 +31,9 @@ jobs:
             rc=$?
             printf '\nJob validation exit code: %s.\n' "$rc" >> "$report"
             cat "$report" >> "$GITHUB_STEP_SUMMARY"
+            # Mirror the scrubbed report in the job log for remote CI diagnostics.
+            # Never print SOURCE_PAT, .env or full dependency installer output.
+            cat "$report"
             if [ "${{ github.event_name }}" = "issues" ]; then
               gh api -X POST "repos/${GITHUB_REPOSITORY}/issues/${{ github.event.issue.number }}/comments" -F body=@"$report" >/dev/null || true
             fi
