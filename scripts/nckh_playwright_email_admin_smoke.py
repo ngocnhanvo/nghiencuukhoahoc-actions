@@ -89,6 +89,37 @@ def verify_additional_admin_modules(page, browser):
     print("PASS: Anonymous browser cannot access rubric/files/teacher private admin")
 
 
+
+def audit_wordpress_home_ctas(page, context):
+    """Discover the exact WP-owned home page before any content edit."""
+    nonce_response = context.request.get(BASE + "/wp-admin/admin-ajax.php?action=rest-nonce", timeout=30000)
+    if not nonce_response.ok:
+        raise RuntimeError("Home page audit: WordPress REST nonce not available")
+    nonce = nonce_response.text().strip()
+    if not (8 <= len(nonce) <= 20):
+        raise RuntimeError("Home page audit: invalid nonce")
+    headers = {"X-WP-Nonce": nonce, "Accept": "application/json"}
+    response = context.request.get(BASE + "/wp-json/wp/v2/pages?context=edit&per_page=100", headers=headers, timeout=40000)
+    if not response.ok:
+        raise RuntimeError(f"Home page audit: WordPress pages list HTTP {response.status}")
+    pages = response.json()
+    if not isinstance(pages, list):
+        raise RuntimeError("Home page audit: WP pages result is not a list")
+    markers = ("Hai phân hệ trong cùng một không gian học tập", "Bắt đầu hành trình nghiên cứu của bạn")
+    identified = []
+    for item in pages:
+        content = item.get("content", {})
+        html = content.get("raw", "") if isinstance(content, dict) else ""
+        if all(marker in html for marker in markers):
+            identified.append((item.get("id"), item.get("slug"), html))
+    if len(identified) != 1:
+        print(f"HOME AUDIT: {len(identified)} matching WordPress pages among {len(pages)} returned; no content changed")
+        return
+    page_id, slug, content = identified[0]
+    print(f"PASS HOME AUDIT: exactly one matching WordPress home page, id={page_id}, slug={slug}")
+    print(f"HOME AUDIT: legacy '#khong-gian' CTA occurrences={content.count('href=\\"#khong-gian\\"')}")
+    print("HOME AUDIT: read-only; no homepage content changed by this browser run")
+
 def main():
     username = os.environ.get("WP_ADMIN_USERNAME", "")
     password = os.environ.get("WP_ADMIN_PASSWORD", "")
@@ -157,6 +188,7 @@ def main():
         print("PASS: Anonymous visitor cannot read privileged teacher selector")
         anon.close()
         verify_additional_admin_modules(page, browser)
+        audit_wordpress_home_ctas(page, context)
         context.close()
         browser.close()
 
