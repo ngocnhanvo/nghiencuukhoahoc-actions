@@ -2,3 +2,4 @@ One-time READ-ONLY FTPS audit for EDURESEARCH. No RETR, STOR, DELE, rename, WP A
 Repeat with verified lftp client: EduResearch. No modifications.
 Check only FTP login directory class and shared HMAC key match, without uploads.
 Verify TLS certificate and authenticated FTP PWD, fail closed before directory probes.
+Use verified FTPS certificate DNS host and authenticated read-only directory probe.
