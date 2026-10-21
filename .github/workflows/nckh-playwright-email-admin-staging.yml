@@ -7,6 +7,7 @@ on:
       - '.github/workflows/nckh-playwright-email-admin-staging.yml'
       - 'scripts/nckh_playwright_email_admin_smoke.py'
       - 'scripts/nckh_private_storage_readiness.py'
+      - 'scripts/nckh_private_storage_backup_rehearsal.py'
 permissions:
   contents: read
 concurrency:
@@ -55,3 +56,14 @@ jobs:
           set +x
           python scripts/nckh_private_storage_readiness.py
           echo 'Private storage preflight completed; no files read or written.'
+
+      - name: Synthetic D2 backup/restore rehearsal on private FTPS staging paths
+        shell: bash
+        env:
+          FTP_SERVER: ${{ secrets.FTP_SERVER }}
+          FTP_USERNAME: ${{ secrets.FTP_USERNAME }}
+          FTP_PASSWORD: ${{ secrets.FTP_PASSWORD }}
+        run: |
+          set -euo pipefail
+          set +x
+          python scripts/nckh_private_storage_backup_rehearsal.py
