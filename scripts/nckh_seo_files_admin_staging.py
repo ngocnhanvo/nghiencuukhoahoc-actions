@@ -109,12 +109,13 @@ def smoke_save() -> None:
             page.wait_for_load_state("domcontentloaded", timeout=45000)
             url = urllib.parse.urlparse(page.url)
             query = urllib.parse.parse_qs(url.query)
-            if (url.netloc != API_HOST or not url.path.endswith("/wp-admin/options-general.php")
-                    or query.get("page") != ["esc-seo-files"]
-                    or query.get("tab") != ["sitemap"]
-                    or query.get("updated") != ["1"]):
-                raise RuntimeError("WordPress admin-post did not redirect to save success: " +
-                                   str(page.url.split("?")[0]))
+            # WordPress may normalize admin screen query parameters on
+            # redirect. The persisted option is the source of truth, not
+            # a byte-for-byte match against a redirect query string.
+            if url.netloc != API_HOST or not url.path.endswith("/wp-admin/options-general.php"):
+                raise RuntimeError("WordPress save did not return to admin settings")
+            print("POST SAVE: returned to WordPress admin; query keys:",
+                  sorted(query.keys()))
             result = context.request.get(API_ORIGIN + "/wp-json/esc-seo-files/v1/public",
                                          headers={"Cache-Control": "no-cache"}, timeout=30000)
             if result.status != 200:
@@ -124,9 +125,15 @@ def smoke_save() -> None:
             if (data.get("site") != SITE or saved.get("mode") != "manual"
                     or saved.get("xml", "").strip() != public_xml.strip()):
                 raise RuntimeError("WordPress returned success but manual sitemap settings were not persisted")
+            # Reopen the edit screen to verify persisted form values as well.
+            page.goto(target, wait_until="domcontentloaded", timeout=50000)
+            if not page.locator('input[name="sitemap_mode"][value="manual"]').is_checked():
+                raise RuntimeError("WordPress admin form did not retain manual sitemap mode")
+            if page.locator("#esc-seo-xml").input_value().strip() != public_xml.strip():
+                raise RuntimeError("WordPress admin textarea did not retain saved sitemap XML")
             # Legacy staging Astro manifest owns publicly deployed XML, not this WP option.
             # No triggering Astro build, no accidental publishing of private pages.
-            print("PASS: real Chrome WordPress admin-post save redirected successfully")
+            print("PASS: real Chrome WordPress admin-post save and reopened form")
             print("PASS: manual sitemap persisted via SEO Files public REST contract")
             print("PASS: staging frontend sitemap remains the reviewed one-public-URL document")
             print("Scope: one NCKH WordPress MU plugin, safe one-URL admin config, no Astro master/production")
