@@ -125,6 +125,35 @@ jobs:
           test ! -e deploy/so-tay
           test ! -e deploy/xem-truoc
           test ! -e deploy/_astro
+          # Apache serves these three public metadata files from document-root.
+          # The Astro SSR runtime serves app assets from client/, while old root
+          # copies remain unchanged unless explicitly included in the archive.
+          # Whitelist ONLY the public, content-checked metadata; never flatten
+          # HTML, _astro assets, application data or private runtime files.
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+          root = Path("deploy")
+          for name in ("llms.txt", "robots.txt", "sitemap.xml"):
+              source = Path("public") / name
+              compiled = root / "client" / name
+              if not source.is_file() or not compiled.is_file():
+                  raise RuntimeError("Missing canonical static file: " + name)
+              raw = source.read_bytes()
+              if not raw or raw != compiled.read_bytes():
+                  raise RuntimeError("Compiled static content does not match source: " + name)
+              if b"nghiencuukhoahoc.id.vn" in raw or b"xuongmunonbaohiem" in raw:
+                  raise RuntimeError("Retired origin in static file: " + name)
+              if name == "llms.txt" and (not raw.startswith(b"# ") or
+                  len(re.findall(rb"\\[[^\\]]+\\]\\(https://nghiencuukhoahoc\\.webnvn\\.com/", raw)) < 2):
+                  raise RuntimeError("llms.txt lacks canonical Markdown links")
+              if name == "robots.txt" and (b"Disallow: /" not in raw or b"Allow: /" in raw):
+                  raise RuntimeError("Staging must retain robots disallow")
+              if name == "sitemap.xml" and b"https://nghiencuukhoahoc.webnvn.com/" not in raw:
+                  raise RuntimeError("Sitemap canonical origin missing")
+              (root / name).write_bytes(raw)
+          print("PASS: Only llms.txt/robots.txt/sitemap.xml copied into Apache document-root.")
+          PY
           echo "$(date +%s)" > deploy/pm2-reload.txt
           python3 - <<'PY'
           import json,os
@@ -145,8 +174,13 @@ jobs:
               if '.env' in names or any(name.startswith('nckh-private-runtime') for name in names):
                   raise RuntimeError('Refusing archive with private runtime secrets')
               # No flattened client output must reappear at root.
-              if any(name in names for name in ('index.html','so-tay/index.html','xem-truoc/index.html','_astro/','robots.txt')):
-                  raise RuntimeError('Duplicate frontend assets outside client/ are forbidden')
+              if any(name in names for name in ('index.html','so-tay/index.html','xem-truoc/index.html','_astro/')):
+                  raise RuntimeError('Duplicate application assets outside client/ are forbidden')
+              for static in ('llms.txt','robots.txt','sitemap.xml'):
+                  if static not in names or ('client/' + static) not in names:
+                      raise RuntimeError('Missing root and client public metadata: ' + static)
+                  if z.read(static) != z.read('client/' + static):
+                      raise RuntimeError('Public metadata copy differs from compiled client: ' + static)
               for required in ('server/entry.mjs','client/index.html','nckh-staging-build.json'):
                   if required not in names:raise RuntimeError('Missing staged bundle file: '+required)
           print('PASS: ZIP contains dev server/client and provenance, no private environment file.')
