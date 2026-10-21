@@ -16,4 +16,5 @@ jobs:
       - name: Inspect public WP Pages metadata only - no WordPress writes
         run: node scripts/nckh-wp-public-page-media-audit.mjs
       - name: Report audit-only completion
-        run: echo 'Audit only: no WordPress updates, no FTP upload, no production build or cache edits.'
+        run: |
+          echo 'Audit only: no WordPress updates, no FTP upload, no production build or cache edits.'
