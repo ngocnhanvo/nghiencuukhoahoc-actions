@@ -1,0 +1,67 @@
+name: EduResearch frontend Node hosting comparison (READ ONLY)
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - .nckh-node-compare-trigger
+permissions:
+  contents: read
+jobs:
+  inspect:
+    if: github.repository == 'ngocnhanvo/nghiencuukhoahoc-actions'
+    runs-on: ubuntu-latest
+    timeout-minutes: 4
+    env:
+      FTP_USERNAME: ${{ secrets.FTP_USERNAME }}
+      FTP_PASSWORD: ${{ secrets.FTP_PASSWORD }}
+    steps:
+      - name: Inspect existing working EduResearch Node startup hints without changing files
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import ftplib,ssl,os,re,io
+          f=ftplib.FTP_TLS(context=ssl.create_default_context(),timeout=16)
+          root='/domains/nghiencuukhoahoc.webnvn.com/public_html'
+          try:
+              f.connect('vt108159.server.idn.vn',21,timeout=16)
+              f.auth()
+              f.login(os.environ['FTP_USERNAME'],os.environ['FTP_PASSWORD'])
+              f.prot_p()
+              f.cwd(root)
+              assert f.pwd().rstrip('/')==root
+              print('NCKH_NODE_FTP=PASS')
+              for path in ('server','server/entry.mjs','client','client/index.html',
+                           '.htaccess','app.js','server.js','index.js','package.json',
+                           'node_modules','tmp','tmp/restart.txt','pm2-reload.txt',
+                           'pse-staging-build.json','nckh-staging-build.json'):
+                  ok=False
+                  try:
+                      size=f.size(path)
+                      ok=size is not None
+                  except ftplib.all_errors:
+                      try:f.cwd(root+'/'+path);ok=True
+                      except ftplib.all_errors:pass
+                  finally:f.cwd(root)
+                  print('NCKH_NODE_MARKER '+path.replace('/','_').replace('.','_')+'='+('PRESENT' if ok else 'MISSING_OR_UNVERIFIED'))
+              try:
+                  size=f.size('.htaccess')
+                  if size and size<=32768:
+                      buf=io.BytesIO()
+                      f.retrbinary('RETR .htaccess',buf.write)
+                      body=buf.getvalue().decode('utf8','replace')
+                      for name in ('PassengerEnabled','PassengerAppRoot','PassengerBaseURI',
+                                   'PassengerStartupFile','PassengerNodejs','PassengerAppType',
+                                   'RewriteEngine','RewriteRule','ProxyPass','SetHandler'):
+                          print('NCKH_NODE_CONFIG '+name+'='+('SET' if re.search(r'(?im)^\s*'+name+r'\b',body) else 'ABSENT'))
+                  else:print('NCKH_NODE_CONFIG htaccess=NOT_READABLE')
+              except ftplib.all_errors:
+                  print('NCKH_NODE_CONFIG htaccess=NOT_AVAILABLE')
+              print('NCKH_NODE_AUDIT=READ_ONLY_PASS')
+          except Exception as e:
+              print('NCKH_NODE_AUDIT=FAILED_'+type(e).__name__)
+              raise SystemExit(1)
+          finally:
+              try:f.close()
+              except Exception:pass
+          PY
