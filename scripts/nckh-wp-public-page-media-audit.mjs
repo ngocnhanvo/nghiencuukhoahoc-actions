@@ -65,3 +65,17 @@ const visit = (x, path = 'root', depth = 0) => {
 };
 visit(menuPayload);
 console.log('MENU_AUDIT ' + JSON.stringify({topLevelKeys:Object.keys(menuPayload||{}),references:refs}));
+
+const frontend = 'https://nghiencuukhoahoc.webnvn.com';
+for (const path of ['/ve-chung-toi', '/lien-he']) {
+  const res = await fetch(frontend + path + '?nckh_legacy_audit=20261021', {
+    headers: { Accept: 'text/html' }, signal: AbortSignal.timeout(15000)
+  });
+  const text = await res.text();
+  const lingering = /blue\s*sea|xuongmunonbaohiem|công ty tnhh đầu tư thương mại blue sea/i.test(text);
+  console.log('PUBLIC_RETIRED_ROUTE_CHECK '+JSON.stringify({
+    path, status:res.status, contentType:res.headers.get('content-type'),
+    hasCopiedBlueSeaBrand:lingering, bodyChars:text.length
+  }));
+  if (lingering) throw new Error('Legacy Blue Sea content is still publicly served at '+path);
+}
