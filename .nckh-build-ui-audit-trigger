@@ -1,2 +1,3 @@
 Read-only Playwright check: load WordPress GitHub Trigger admin UI without clicking Build, inspecting token values, changing database, or running deployment.
 Repeat read-only audit with passive inspection of loaded plugin and existing status polling; do not dispatch any build.
+Retry once after transient WordPress login timeout; no build dispatch, no writes.
