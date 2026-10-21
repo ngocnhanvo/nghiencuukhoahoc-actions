@@ -117,7 +117,8 @@ def audit_wordpress_home_ctas(page, context):
         return
     page_id, slug, content = identified[0]
     print(f"PASS HOME AUDIT: exactly one matching WordPress home page, id={page_id}, slug={slug}")
-    print(f"HOME AUDIT: legacy '#khong-gian' CTA occurrences={content.count('href=\\"#khong-gian\\"')}")
+    legacy_count = content.count('href="#khong-gian"')
+    print(f"HOME AUDIT: legacy '#khong-gian' CTA occurrences={legacy_count}")
     print("HOME AUDIT: read-only; no homepage content changed by this browser run")
 
 def main():
