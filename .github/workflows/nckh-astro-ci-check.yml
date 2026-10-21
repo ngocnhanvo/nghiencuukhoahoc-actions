@@ -61,7 +61,9 @@ jobs:
             tail -n 48 "${RUNNER_TEMP}/nckh-page-cache.log" >> "$report"
             exit 1
           fi
-          if pnpm exec astro check --js-only > "${RUNNER_TEMP}/check.log" 2>&1; then
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            printf 'Focused public-cache QA only; existing Astro JS suite not repeated.\n' >> "$report"
+          elif pnpm exec astro check --js-only > "${RUNNER_TEMP}/check.log" 2>&1; then
             printf 'Astro JS check: **PASS**.\n' >> "$report"
           else
             printf 'Astro JS check: **FAIL**.\n\n' >> "$report"
