@@ -1,0 +1,24 @@
+name: EduResearch runtime database identity (read-only)
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - .nckh-runtime-db-verify-trigger
+permissions:
+  contents: read
+jobs:
+  wordpress-database:
+    name: Compare live WordPress DB identity to EduResearch reference
+    if: github.repository == 'ngocnhanvo/nghiencuukhoahoc-actions'
+    uses: ngocnhanvo/knowledge-actions/.github/workflows/playwright.yml@main
+    with:
+      site_url: https://api-nghiencuukhoahoc.webnvn.com
+      expected_hostname: api-nghiencuukhoahoc.webnvn.com
+      suite: wordpress-site-health
+      # SHA-256 of the EduResearch DB_NAME guard in private PHP source.
+      # Only PASS/FAIL is reported; the actual runtime DB name is never logged.
+      expected_db_sha256: 4cc8a9aafa3629a68481c065d2702f8c9f716fddefa554b954530e5b6906553c
+    secrets:
+      WP_ADMIN_USERNAME: ${{ secrets.WP_ADMIN_USERNAME }}
+      WP_ADMIN_PASSWORD: ${{ secrets.WP_ADMIN_PASSWORD }}
