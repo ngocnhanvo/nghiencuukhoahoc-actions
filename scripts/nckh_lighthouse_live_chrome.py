@@ -51,19 +51,32 @@ def main():
         assert page.locator(".nd-document-body > h3").count() == 0, "H3 preview still skips H2"
         assert page.locator(".nd-document-body > h2").count() == 1, "Preview H2 missing"
         assert page.locator("h1").count() >= 1, "Page H1 missing"
+        problems = []
         for name in ("llms.txt", "robots.txt", "sitemap.xml"):
-            r = context.request.get(ORIGIN + "/" + name, headers={"Cache-Control": "no-cache"}, timeout=30000)
-            assert r.status == 200, f"{name} HTTP {r.status}"
-            body = r.text()
-            assert "nghiencuukhoahoc.id.vn" not in body, f"Retired origin in {name}"
-            if name == "llms.txt":
-                assert re.search(r"^# ", body, re.M), "llms.txt missing H1"
-                assert len(re.findall(r"\[[^\]]+\]\(https://[^)]+\)", body)) >= 2, "llms.txt missing Markdown links"
-            elif name == "robots.txt":
-                assert "Disallow: /" in body and ORIGIN + "/sitemap.xml" in body
-            elif name == "sitemap.xml":
-                assert "<loc>" + ORIGIN + "/</loc>" in body
-            print(f"POST-DEPLOY {name}: HTTP 200, correct canonical content")
+            for base_path in ("/", "/client/"):
+                url = ORIGIN + base_path + name
+                r = context.request.get(url, headers={"Cache-Control": "no-cache"}, timeout=30000)
+                body = r.text()
+                print(f"DIAGNOSTIC {base_path}{name}: HTTP {r.status}; content-type={r.headers.get('content-type','')}; cache={r.headers.get('cf-cache-status','')}; sample={body[:550]!r}")
+                if base_path != "/":
+                    continue
+                if r.status != 200:
+                    problems.append(f"{name} HTTP {r.status}")
+                    continue
+                if "nghiencuukhoahoc.id.vn" in body:
+                    problems.append(f"Retired origin in {name}")
+                if name == "llms.txt":
+                    if not re.search(r"^# ", body, re.M):
+                        problems.append("llms.txt missing H1")
+                    if len(re.findall(r"\[[^\]]+\]\(https://[^)]+\)", body)) < 2:
+                        problems.append("llms.txt missing Markdown links")
+                elif name == "robots.txt":
+                    if "Disallow: /" not in body or ORIGIN + "/sitemap.xml" not in body:
+                        problems.append("robots.txt old sitemap/unsafe robots policy")
+                elif name == "sitemap.xml":
+                    if "<loc>" + ORIGIN + "/</loc>" not in body:
+                        problems.append("sitemap.xml lacks canonical homepage")
+        assert not problems, "Static file URLs failed: " + "; ".join(problems)
         print("PASS: live staging mobile Chromium accessibility and llms.txt/sitemap/robots smoke.")
         print("READ ONLY: no WordPress writes, no authentication, no FTP, no master merge.")
         context.close()
