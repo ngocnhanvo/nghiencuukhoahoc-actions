@@ -213,6 +213,48 @@ def audit_wordpress_home_ctas(page, context):
         raise RuntimeError("STOP: WordPress homepage update could not be verified byte-for-byte")
     print("PASS HOME UPDATED: WordPress staging homepage CTAs now link directly to the real NCKH notebook/skills")
 
+def verify_live_homepage_navigation(browser):
+    """Click actual public Astro/WordPress homepage links; no sign-in or user data writes."""
+    frontend = "https://nghiencuukhoahoc.webnvn.com"
+    front = urlparse(frontend)
+    def safe_front_url(url):
+        dest = urlparse(url)
+        if dest.scheme != "https" or dest.hostname != front.hostname:
+            raise RuntimeError("STOP: staging homepage click left the approved Astro host")
+        return dest
+    public = browser.new_context(ignore_https_errors=False, locale="vi-VN", accept_downloads=False)
+    page = public.new_page()
+    page.set_default_timeout(25000)
+    page.goto(frontend + "/", wait_until="domcontentloaded", timeout=60000)
+    safe_front_url(page.url)
+    expect(page.locator('.nd-tabs a.nd-tab[href="/so-tay"]')).to_have_count(1)
+    expect(page.locator('.nd-tabs a.nd-tab[href="/so-tay?tab=skills"]')).to_have_count(1)
+    expect(page.locator('.nd-cta a.nd-btn[href="/so-tay"]')).to_have_count(1)
+    expect(page.locator('.nd-cta a.nd-btn')).to_contain_text("Bắt đầu sử dụng Sổ tay")
+    if page.locator('.nd-cta a[href^="#"]').count():
+        raise RuntimeError("Homepage main CTA still loops to an in-page preview")
+    print("PASS HOME BROWSER: WordPress homepage renders direct real notebook and skills links")
+
+    page.locator('.nd-cta a.nd-btn').click()
+    page.wait_for_url("**/so-tay", timeout=55000)
+    route = safe_front_url(page.url)
+    if route.path != "/so-tay":
+        raise RuntimeError("Homepage call-to-action did not reach real notebook route")
+    expect(page.locator("#login-link")).to_have_count(1)
+    print("PASS HOME CLICK: last-page CTA opens the real notebook application")
+
+    page.goto(frontend + "/", wait_until="domcontentloaded", timeout=60000)
+    safe_front_url(page.url)
+    page.locator('.nd-tabs a.nd-tab[href="/so-tay?tab=skills"]').click()
+    page.wait_for_url("**/so-tay?tab=skills", timeout=55000)
+    route = safe_front_url(page.url)
+    if route.path != "/so-tay" or route.query != "tab=skills":
+        raise RuntimeError("Homepage skills link did not preserve deep-linked tab")
+    expect(page.locator("#tab-skills")).to_have_count(1)
+    print("PASS HOME CLICK: skill feature opens the real workspace with tab=skills")
+    public.close()
+
+
 def main():
     username = os.environ.get("WP_ADMIN_USERNAME", "")
     password = os.environ.get("WP_ADMIN_PASSWORD", "")
@@ -282,6 +324,7 @@ def main():
         anon.close()
         verify_additional_admin_modules(page, browser)
         audit_wordpress_home_ctas(page, context)
+        verify_live_homepage_navigation(browser)
         context.close()
         browser.close()
 

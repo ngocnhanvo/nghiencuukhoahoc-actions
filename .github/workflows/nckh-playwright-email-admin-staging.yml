@@ -36,7 +36,7 @@ jobs:
           set -euo pipefail
           python -m pip install --disable-pip-version-check 'playwright>=1.50,<2'
           python -m playwright install --with-deps chromium
-      - name: One-time WordPress homepage CTA staging update and Chromium admin QA
+      - name: Chromium staging admin and real homepage navigation QA
         env:
           FTP_SERVER: ${{ secrets.FTP_SERVER }}
           FTP_USERNAME: ${{ secrets.FTP_USERNAME }}
@@ -45,11 +45,12 @@ jobs:
         run: |
           set -euo pipefail
           set +x
-          NCKH_HOME_CTA_APPLY=1 python scripts/nckh_playwright_email_admin_smoke.py
+          python scripts/nckh_playwright_email_admin_smoke.py
           echo 'Playwright staging-only UI check completed; no screenshots or credentials uploaded.'
 
 
       - name: Read-only FTPS audit of NCKH private attachment storage path
+        if: github.event_name == 'workflow_dispatch' && inputs.run_d2_rehearsal == true
         shell: bash
         env:
           FTP_SERVER: ${{ secrets.FTP_SERVER }}
@@ -62,6 +63,7 @@ jobs:
           echo 'Private storage preflight completed; no files read or written.'
 
       - name: Synthetic D2 backup/restore rehearsal on private FTPS staging paths
+        if: github.event_name == 'workflow_dispatch' && inputs.run_d2_rehearsal == true
         shell: bash
         env:
           FTP_SERVER: ${{ secrets.FTP_SERVER }}
