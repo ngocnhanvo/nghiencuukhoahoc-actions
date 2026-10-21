@@ -238,6 +238,7 @@ jobs:
           zip -q -r ../upload/nckh-astro.zip .
           cd ..
           python3 - <<'PY'
+          import json
           from zipfile import ZipFile
           with ZipFile('upload/nckh-astro.zip') as z:
               names=z.namelist()
