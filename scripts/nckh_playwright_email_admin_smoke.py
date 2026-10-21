@@ -53,7 +53,16 @@ def verify_additional_admin_modules(page, browser):
         raise RuntimeError("STOP: Real private file upload unexpectedly enabled")
     if "public_html" not in body:
         raise RuntimeError("Private storage policy warning was removed")
-    print("PASS: Private attachments remain disabled with outside-webroot warning")
+    marker = "Kiểm tra thư mục ngoài webroot và quyền ghi PHP:"
+    if marker not in body:
+        raise RuntimeError("D2 PHP-local storage diagnostic absent after staging release")
+    if "CHƯA SẴN SÀNG" in body:
+        print("BLOCKED D2: PHP reports storage path or write permissions are not ready")
+    elif "SẴN SÀNG" in body:
+        print("PASS D2: PHP confirms private directory path, no symlink and writable access")
+    else:
+        raise RuntimeError("D2 PHP directory diagnostic has unknown state")
+    print("PASS: Private attachments remain disabled; file backup still unverified")
 
     page.goto(teacher_url, wait_until="domcontentloaded", timeout=45000)
     ensure_staging(page.url)

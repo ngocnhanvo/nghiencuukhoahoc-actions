@@ -44,51 +44,6 @@ jobs:
           echo 'Playwright staging-only UI check completed; no screenshots or credentials uploaded.'
 
 
-      - name: One-time staging private root bootstrap (outside webroot)
-        shell: bash
-        env:
-          FTP_SERVER: ${{ secrets.FTP_SERVER }}
-          FTP_USERNAME: ${{ secrets.FTP_USERNAME }}
-          FTP_PASSWORD: ${{ secrets.FTP_PASSWORD }}
-        run: |
-          set -euo pipefail
-          set +x
-          python3 - <<'PY'
-          import os,ftplib
-          from urllib.parse import urlparse
-          base='/domains/api-nghiencuukhoahoc.webnvn.com'
-          root=base+'/nckh-private-files'
-          raw=os.environ['FTP_SERVER']
-          u=urlparse(raw if '://' in raw else 'ftps://'+raw)
-          ftp=ftplib.FTP_TLS()
-          ftp.connect(u.hostname,u.port or 21,timeout=30)
-          try:
-              ftp.login(os.environ['FTP_USERNAME'],os.environ['FTP_PASSWORD'])
-              ftp.prot_p()
-              ftp.cwd(base)
-              if ftp.pwd().rstrip('/')!=base:raise RuntimeError('STOP: Wrong NCKH staging domain')
-              try:
-                  ftp.cwd(root)
-              except ftplib.error_perm as e:
-                  if not str(e).startswith('550'):raise
-                  ftp.cwd(base)
-                  ftp.mkd('nckh-private-files')
-                  ftp.cwd(root)
-                  print('PASS: Created empty NCKH staging private root outside public_html')
-              else:
-                  print('PASS: Existing NCKH staging private root, skipped creation')
-              if ftp.pwd().rstrip('/')!=root:raise RuntimeError('STOP: Private root outside expected staging path')
-              try:
-                  ftp.sendcmd('SITE CHMOD 700 '+root)
-                  print('PASS: Server accepted restrictive private directory mode request')
-              except ftplib.error_perm:
-                  print('BLOCKED D2: FTPS cannot confirm restrictive root permission; manual server permission check required')
-              print('SAFE: Outbound email, private uploads and rubric publication flags were not changed')
-          finally:
-              try:ftp.quit()
-              except ftplib.all_errors:pass
-          PY
-
       - name: Read-only FTPS audit of NCKH private attachment storage path
         shell: bash
         env:
