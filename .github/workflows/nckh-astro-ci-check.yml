@@ -18,16 +18,34 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@v4
-      - name: Run read-only WordPress legacy Pages and media audit when requested
+      - name: Audit or reversible cleanup of only verified Blue Sea Pages
         shell: bash
+        env:
+          WP_ADMIN_USERNAME: ${{ secrets.WP_ADMIN_USERNAME }}
+          WP_ADMIN_PASSWORD: ${{ secrets.WP_ADMIN_PASSWORD }}
         run: |
           set -euo pipefail
+          set +x
           task="$(node -p "JSON.parse(require('fs').readFileSync('docs/nckh-workflow-request.json','utf8')).task")"
-          if [ "$task" = 'wp-pages-media-readonly' ]; then
-            node scripts/nckh-wp-public-page-media-audit.mjs
-          else
-            echo "Read-only Pages audit not requested; no WordPress access."
-          fi
+          request="$(node -p "JSON.parse(require('fs').readFileSync('docs/nckh-workflow-request.json','utf8')).request_id")"
+          case "$task" in
+            wp-pages-media-readonly)
+              node scripts/nckh-wp-public-page-media-audit.mjs
+              ;;
+            wp-legacy-precheck)
+              python3 scripts/nckh_trash_legacy_wp_pages.py --mode check
+              ;;
+            wp-legacy-trash)
+              if [ "$request" != 'nckh_legacy_blue_sea_trash_two_verified_pages_20261021' ]; then
+                echo 'Cleanup refused: one-time request ID mismatch.'
+                exit 1
+              fi
+              python3 scripts/nckh_trash_legacy_wp_pages.py --mode trash
+              ;;
+            *)
+              echo 'No WordPress maintenance requested; no WP access.'
+              ;;
+          esac
   check:
     if: >-
       github.repository == 'ngocnhanvo/nghiencuukhoahoc-actions'
