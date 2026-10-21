@@ -96,7 +96,8 @@ jobs:
           export NODE_ENV=production
           # Gate the hosting-specific OAuth cookie/redirect workaround on
           # its strict staging redirect allowlist and HTML transition tests.
-          pnpm exec vitest run src/lib/nckh/authNavigation.test.ts src/lib/nckh/homeNavigation.test.ts src/astro/components/Layout/Header.research-layout.test.ts src/lib/nckh/publicBrand.test.ts src/lib/nckh/appDesignConsistency.test.ts src/lib/nckh/pageLoading.test.ts scripts/sync-seo-files.nckh.test.ts
+          node scripts/generate-sitemap-robots.mjs --check
+          pnpm exec vitest run src/lib/nckh/authNavigation.test.ts src/lib/nckh/homeNavigation.test.ts src/astro/components/Layout/Header.research-layout.test.ts src/lib/nckh/publicBrand.test.ts src/lib/nckh/appDesignConsistency.test.ts src/lib/nckh/pageLoading.test.ts scripts/sync-seo-files.nckh.test.ts scripts/generate-sitemap-robots.test.ts
           pnpm run build-git
           node --check dist/server/entry.mjs
           test -s dist/client/index.html
