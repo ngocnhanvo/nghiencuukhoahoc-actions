@@ -89,18 +89,27 @@ jobs:
           set +x
           python3 -m py_compile actions-hub/scripts/nckh_published_sitemap_revision.py
           python3 actions-hub/scripts/nckh_published_sitemap_revision.py
-      - name: Install and build Astro github (no OAuth credentials in build)
+      # GitHub-hosted runners are ephemeral: reuse downloaded packages
+      # keyed by the Astro production lockfile. Never cache node_modules or .env.
+      - name: Set up pnpm 9 (without installing project dependencies)
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.9
+          run_install: false
+      - name: Set up Node.js 24 with pnpm store cache
         uses: actions/setup-node@v4
         with:
           node-version: '24'
+          cache: pnpm
+          cache-dependency-path: source/pnpm-lock.yaml
       - name: Build server and client for staging
         shell: bash
         working-directory: source
         run: |
           set -euo pipefail
-          corepack enable
-          corepack prepare pnpm@9 --activate
-          pnpm install --frozen-lockfile
+          # Restore verified pnpm store where available; recreate dependencies
+          # from the exact lockfile on every run. Cache miss is still safe.
+          pnpm install --frozen-lockfile --prefer-offline
           printf '%s\n' "$ENV_FILE" > .env
           printf '\nNCKH_HOMEPAGE_ONLY_BUILD=true\ncacheAll=false\ncachePage=false\ncacheProduct=false\ncacheTablePress=false\ncacheRedirect=false\ncacheMenu=false\ncacheProductCategory=false\n' >> .env
           export NCKH_HOMEPAGE_ONLY_BUILD=true
