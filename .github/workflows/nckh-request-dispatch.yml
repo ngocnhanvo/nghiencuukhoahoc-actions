@@ -35,6 +35,8 @@ jobs:
               'astro-public-cache-ci':'nckh-astro-ci-check.yml',
               'astro-build-readonly':'nckh-astro-source-build-check.yml',
               'wp-pages-media-readonly':'nckh-astro-ci-check.yml',
+              'wp-legacy-precheck':'nckh-astro-ci-check.yml',
+              'wp-legacy-trash':'nckh-astro-ci-check.yml',
               'php-stage':'nckh-ai-staging-deploy.yml',
               'research-stage':'nckh-notebook-staging-deploy.yml',
               'astro-stage':'nckh-astro-github-staging-deploy.yml',
