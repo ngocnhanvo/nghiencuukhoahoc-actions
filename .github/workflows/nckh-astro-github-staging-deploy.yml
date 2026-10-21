@@ -10,8 +10,12 @@ concurrency:
   cancel-in-progress: false
 jobs:
   stage_dev:
+    # Retired after owner-approved 2026-10-21 production cutover.
+    # Staging and production share the same public_html; refuse future
+    # development-branch artifacts at the live master-only destination.
+    # Production: .github/workflows/nckh-deploy.yml, source master.
     if: >-
-      github.repository == 'ngocnhanvo/nghiencuukhoahoc-actions'
+      false && github.repository == 'ngocnhanvo/nghiencuukhoahoc-actions'
       && github.ref == 'refs/heads/main'
       && (github.event_name == 'workflow_dispatch'
           || (github.event_name == 'issues'
