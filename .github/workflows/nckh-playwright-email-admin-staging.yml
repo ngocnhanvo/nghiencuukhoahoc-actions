@@ -36,12 +36,16 @@ jobs:
           set -euo pipefail
           python -m pip install --disable-pip-version-check 'playwright>=1.50,<2'
           python -m playwright install --with-deps chromium
-      - name: Chromium admin QA for NCKH Email, Rubric, Files and Teacher permissions
+      - name: One-time WordPress homepage CTA staging update and Chromium admin QA
+        env:
+          FTP_SERVER: ${{ secrets.FTP_SERVER }}
+          FTP_USERNAME: ${{ secrets.FTP_USERNAME }}
+          FTP_PASSWORD: ${{ secrets.FTP_PASSWORD }}
         shell: bash
         run: |
           set -euo pipefail
           set +x
-          python scripts/nckh_playwright_email_admin_smoke.py
+          NCKH_HOME_CTA_APPLY=1 python scripts/nckh_playwright_email_admin_smoke.py
           echo 'Playwright staging-only UI check completed; no screenshots or credentials uploaded.'
 
 

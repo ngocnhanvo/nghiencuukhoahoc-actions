@@ -91,35 +91,127 @@ def verify_additional_admin_modules(page, browser):
 
 
 def audit_wordpress_home_ctas(page, context):
-    """Discover the exact WP-owned home page before any content edit."""
+    """Explicit, guarded one-time WordPress home CTA fix; defaults to read-only."""
+    import re
+    import json
     nonce_response = context.request.get(BASE + "/wp-admin/admin-ajax.php?action=rest-nonce", timeout=30000)
     if not nonce_response.ok:
-        raise RuntimeError("Home page audit: WordPress REST nonce not available")
+        raise RuntimeError("Home page audit: WordPress REST nonce unavailable")
     nonce = nonce_response.text().strip()
     if not (8 <= len(nonce) <= 20):
-        raise RuntimeError("Home page audit: invalid nonce")
+        raise RuntimeError("Home page audit: invalid REST nonce")
     headers = {"X-WP-Nonce": nonce, "Accept": "application/json"}
     response = context.request.get(BASE + "/wp-json/wp/v2/pages?context=edit&per_page=100", headers=headers, timeout=40000)
     if not response.ok:
-        raise RuntimeError(f"Home page audit: WordPress pages list HTTP {response.status}")
+        raise RuntimeError(f"Home page audit: WP pages listing HTTP {response.status}")
     pages = response.json()
     if not isinstance(pages, list):
-        raise RuntimeError("Home page audit: WP pages result is not a list")
+        raise RuntimeError("Home page audit: not a list")
     markers = ("Hai phân hệ trong cùng một không gian học tập", "Bắt đầu hành trình nghiên cứu của bạn")
-    identified = []
-    for item in pages:
-        content = item.get("content", {})
-        html = content.get("raw", "") if isinstance(content, dict) else ""
-        if all(marker in html for marker in markers):
-            identified.append((item.get("id"), item.get("slug"), html))
-    if len(identified) != 1:
-        print(f"HOME AUDIT: {len(identified)} matching WordPress pages among {len(pages)} returned; no content changed")
+    matching = [item for item in pages if isinstance(item.get("content"),dict) and all(
+        mark in item["content"].get("raw","") for mark in markers)]
+    if len(matching)!=1 or matching[0].get("id")!=248 or matching[0].get("slug")!="trang-chu":
+        raise RuntimeError("STOP: exactly one approved WordPress staging homepage (id 248) was not found")
+    original=matching[0]["content"]["raw"]
+    print("PASS HOME AUDIT: WordPress staging home id 248, slug trang-chu, unique content match")
+
+    # Works on the WordPress-managed page HTML only, preserving all other WP fields.
+    def replace_anchor(html, old_label, new_label, dest):
+        anchors=list(re.finditer(r'<a\b[^>]*>[\s\S]*?</a\s*>',html,re.IGNORECASE))
+        found=[m for m in anchors if old_label in m.group()]
+        if not found:
+            if new_label in html: return html
+            raise RuntimeError("STOP: expected homepage CTA label not found: "+old_label)
+        if len(found)!=1:
+            raise RuntimeError("STOP: ambiguous homepage CTA: "+old_label)
+        hit=found[0]
+        old=hit.group()
+        open_match=re.match(r'<a\b[^>]*>',old,re.IGNORECASE)
+        if not open_match:
+            raise RuntimeError("STOP: malformed CTA")
+        tag=open_match.group()
+        patched_tag,n=re.subn(r'\bhref\s*=\s*(["\']).*?\1','href="'+dest+'"',tag,count=1,flags=re.IGNORECASE|re.DOTALL)
+        if n!=1:
+            raise RuntimeError("STOP: existing CTA has no quoted href")
+        new=patched_tag+old[len(tag):].replace(old_label,new_label,1)
+        return html[:hit.start()]+new+html[hit.end():]
+
+    def replace_preview_label(html, choice, label, dest, accessible):
+        pattern=r'<label\b(?=[^>]*\bfor\s*=\s*["\']'+re.escape(choice)+r'["\'])[^>]*>\s*'+re.escape(label)+r'\s*</label>'
+        replacement='<a class="nd-tab" href="'+dest+'" aria-label="'+accessible+'">'+label+' ↗</a>'
+        fixed,n=re.subn(pattern,lambda _: replacement,html,count=1,flags=re.IGNORECASE)
+        if n!=1:
+            if replacement in html: return html
+            raise RuntimeError("STOP: WP homepage feature label not found: "+choice)
+        return fixed
+
+    updated=replace_anchor(original,"Xem không gian nghiên cứu","Mở Sổ tay NCKH","/so-tay")
+    updated=replace_anchor(updated,"Xem trước các tính năng","Bắt đầu sử dụng Sổ tay","/so-tay")
+    updated=replace_preview_label(updated,"nd-choose-journal","Sổ tay NCKH","/so-tay","Mở Sổ tay NCKH thật")
+    updated=replace_preview_label(updated,"nd-choose-skills","Quản lý kỹ năng","/so-tay?tab=skills","Mở Quản lý kỹ năng thật")
+    updated=updated.replace(
+        "Các màn hình bên cạnh chỉ minh họa quy trình, chưa kết nối hệ thống.",
+        "Dữ liệu bên cạnh là minh họa. Chọn Sổ tay hoặc Quản lý kỹ năng để mở ứng dụng thật."
+    ).replace(
+        "Chúng tôi đang hoàn thiện không gian giúp bạn ghi chép, trao đổi và phát triển nghiên cứu một cách bài bản.",
+        "Ghi chép, trao đổi với giáo viên và theo dõi tiến trình kỹ năng trực tiếp trong ứng dụng."
+    )
+    if updated==original:
+        print("PASS HOME AUDIT: direct CTA links already present, no WordPress write needed")
         return
-    page_id, slug, content = identified[0]
-    print(f"PASS HOME AUDIT: exactly one matching WordPress home page, id={page_id}, slug={slug}")
-    legacy_count = content.count('href="#khong-gian"')
-    print(f"HOME AUDIT: legacy '#khong-gian' CTA occurrences={legacy_count}")
-    print("HOME AUDIT: read-only; no homepage content changed by this browser run")
+    if os.environ.get("NCKH_HOME_CTA_APPLY")!="1":
+        print("HOME AUDIT: safe direct-link update ready but disabled; no WordPress content changed")
+        return
+    # Re-fetch the exact staging page to avoid racing a newer editorial update.
+    page_url=BASE+"/wp-json/wp/v2/pages/248?context=edit"
+    again=context.request.get(page_url,headers=headers,timeout=30000)
+    if not again.ok or again.json().get("slug")!="trang-chu" or (
+        again.json().get("content",{}).get("raw")!=original):
+        raise RuntimeError("STOP: homepage content changed since read; no write performed")
+
+    import ftplib,io,secrets,time,hashlib
+    required=("FTP_SERVER","FTP_USERNAME","FTP_PASSWORD")
+    if any(not os.environ.get(k) for k in required):
+        raise RuntimeError("STOP: staging FTPS secrets unavailable for homepage backup")
+    from urllib.parse import urlparse
+    raw=os.environ["FTP_SERVER"]
+    server=urlparse(raw if "://" in raw else "ftps://"+raw)
+    ftp=ftplib.FTP_TLS()
+    ftp.connect(server.hostname,server.port or 21,timeout=30)
+    try:
+        ftp.login(os.environ["FTP_USERNAME"],os.environ["FTP_PASSWORD"])
+        ftp.prot_p()
+        root="/domains/api-nghiencuukhoahoc.webnvn.com"
+        ftp.cwd(root)
+        if ftp.pwd().rstrip("/")!=root: raise RuntimeError("STOP: wrong FTP domain")
+        try:
+            ftp.cwd(root+"/nckh-config-backups")
+        except ftplib.error_perm as e:
+            if not str(e).startswith("550"): raise
+            ftp.cwd(root);ftp.mkd("nckh-config-backups");ftp.cwd(root+"/nckh-config-backups")
+        backup_name="nckh-home-links-before-"+str(int(time.time()))+"-"+secrets.token_hex(4)+".html.txt"
+        content_bytes=original.encode("utf-8")
+        ftp.storbinary("STOR "+backup_name,io.BytesIO(content_bytes))
+        saved=bytearray()
+        ftp.retrbinary("RETR "+backup_name,saved.extend)
+        if hashlib.sha256(saved).digest()!=hashlib.sha256(content_bytes).digest():
+            raise RuntimeError("STOP: original staging homepage FTPS backup checksum mismatch")
+    finally:
+        try: ftp.quit()
+        except ftplib.all_errors: pass
+    print("PASS HOME BACKUP: original WordPress homepage stored outside public_html and verified")
+
+    posted=context.request.post(
+        BASE+"/wp-json/wp/v2/pages/248",
+        data=json.dumps({"content":updated},ensure_ascii=False),
+        headers={**headers,"Content-Type":"application/json"},timeout=55000
+    )
+    if not posted.ok:
+        raise RuntimeError(f"WordPress staging home CTA update rejected HTTP {posted.status}")
+    final=context.request.get(page_url,headers=headers,timeout=35000)
+    if not final.ok or final.json().get("content",{}).get("raw")!=updated:
+        raise RuntimeError("STOP: WordPress homepage update could not be verified byte-for-byte")
+    print("PASS HOME UPDATED: WordPress staging homepage CTAs now link directly to the real NCKH notebook/skills")
 
 def main():
     username = os.environ.get("WP_ADMIN_USERNAME", "")
