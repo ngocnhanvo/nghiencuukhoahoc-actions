@@ -1,16 +1,29 @@
 name: EduResearch runtime database identity (read-only)
 on:
   workflow_dispatch:
+    inputs:
+      suite:
+        description: 'Read-only test of DB identity or WP Build UI'
+        type: choice
+        required: true
+        default: wordpress-site-health
+        options:
+          - wordpress-site-health
+          - wordpress-build-trigger-audit
   push:
     branches: [main]
     paths:
       - .nckh-runtime-db-verify-trigger
+      - .nckh-build-ui-audit-trigger
 permissions:
   contents: read
 jobs:
   wordpress-database:
     name: Compare live WordPress DB identity to EduResearch reference
-    if: github.repository == 'ngocnhanvo/nghiencuukhoahoc-actions'
+    if: >-
+      github.repository == 'ngocnhanvo/nghiencuukhoahoc-actions'
+      && ((github.event_name == 'push' && github.event.head_commit.message == 'test: verify EduResearch runtime DB identity through shared Playwright')
+          || (github.event_name == 'workflow_dispatch' && inputs.suite == 'wordpress-site-health'))
     uses: ngocnhanvo/knowledge-actions/.github/workflows/playwright.yml@main
     with:
       site_url: https://api-nghiencuukhoahoc.webnvn.com
@@ -19,6 +32,21 @@ jobs:
       # SHA-256 of the EduResearch DB_NAME guard in private PHP source.
       # Only PASS/FAIL is reported; the actual runtime DB name is never logged.
       expected_db_sha256: 4cc8a9aafa3629a68481c065d2702f8c9f716fddefa554b954530e5b6906553c
+    secrets:
+      WP_ADMIN_USERNAME: ${{ secrets.WP_ADMIN_USERNAME }}
+      WP_ADMIN_PASSWORD: ${{ secrets.WP_ADMIN_PASSWORD }}
+
+  build-ui-audit:
+    name: Read-only audit of EduResearch WP Build Website dashboard
+    if: >-
+      github.repository == 'ngocnhanvo/nghiencuukhoahoc-actions'
+      && ((github.event_name == 'push' && github.event.head_commit.message == 'test: trigger read-only EduResearch build UI audit')
+          || (github.event_name == 'workflow_dispatch' && inputs.suite == 'wordpress-build-trigger-audit'))
+    uses: ngocnhanvo/knowledge-actions/.github/workflows/playwright.yml@main
+    with:
+      site_url: https://api-nghiencuukhoahoc.webnvn.com
+      expected_hostname: api-nghiencuukhoahoc.webnvn.com
+      suite: wordpress-build-trigger-audit
     secrets:
       WP_ADMIN_USERNAME: ${{ secrets.WP_ADMIN_USERNAME }}
       WP_ADMIN_PASSWORD: ${{ secrets.WP_ADMIN_PASSWORD }}
