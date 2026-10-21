@@ -34,7 +34,7 @@ def contrast(foreground: list[int], background: list[int]) -> float:
 
 
 def parse_rgb(value: str) -> list[int]:
-    matches = re.findall(r"[\\d.]+", value)
+    matches = re.findall(r"[\d.]+", value)
     if len(matches) < 3:
         raise AssertionError(f"Invalid browser color: {value}")
     return [round(float(x)) for x in matches[:3]]
@@ -42,12 +42,12 @@ def parse_rgb(value: str) -> list[int]:
 
 def main() -> None:
     m = re.search(
-        r"#main-header\\.research-header\\s+\\.research-brand-subtitle\\s*\\{[^}]*?color:\\s*(#[0-9a-fA-F]{6})",
+        r"#main-header\.research-header\s+\.research-brand-subtitle\s*\{[^}]*?color:\s*(#[0-9a-fA-F]{6})",
         HEADER,
     )
     assert m, "Cannot find the source subtitle CSS color"
     title_color = m.group(1)
-    links = re.findall(r"\\[[^\\]]+\\]\\((https://[^)]+)\\)", LLMS)
+    links = re.findall(r"\[[^\]]+\]\((https://[^)]+)\)", LLMS)
     assert LLMS.lstrip().startswith("# "), "llms.txt must have Markdown H1"
     assert len(links) >= 2, "llms.txt must contain Markdown links"
     assert all(link.startswith(ORIGIN + "/") for link in links), "Only public canonical links allowed"
