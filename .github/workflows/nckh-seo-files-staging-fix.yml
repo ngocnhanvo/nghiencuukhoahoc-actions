@@ -42,6 +42,8 @@ jobs:
           grep -Fq 'https://nghiencuukhoahoc.webnvn.com' source/wp-content/mu-plugins/esc-seo-files.php
           php -l source/wp-content/mu-plugins/esc-seo-files.php
           php -l source/tests/seo-files.php
+          php -l source/nckh-unzip.php
+          python3 -m py_compile scripts/nckh_unzip_revision_staging.py
           php source/tests/seo-files.php
           python3 -m py_compile scripts/nckh_seo_files_admin_staging.py
           echo "Source PHP master $(git -C source rev-parse HEAD)" >> "$GITHUB_STEP_SUMMARY"
@@ -61,4 +63,11 @@ jobs:
           set +x
           python scripts/nckh_seo_files_admin_staging.py
           echo 'SEO Files: PHP regression, staging FTPS backup, Playwright admin-save, persisted REST sitemap PASS' >> "$GITHUB_STEP_SUMMARY"
+      - name: Update only signed NCKH staging unzip helper to preserve unchanged sitemap
+        shell: bash
+        run: |
+          set -euo pipefail
+          set +x
+          python3 scripts/nckh_unzip_revision_staging.py
+          echo 'Signed unzip: unchanged sitemap carries locally across client swap (no XML transfer)' >> "$GITHUB_STEP_SUMMARY"
           echo 'Scope: API staging only; no Astro master/production, no other WordPress site' >> "$GITHUB_STEP_SUMMARY"
