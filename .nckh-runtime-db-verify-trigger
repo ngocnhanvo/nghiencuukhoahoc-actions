@@ -1,0 +1,1 @@
+Run read-only authenticated WordPress Site Health comparison using EduResearch-owned secrets. Compare hashed DB name to source PHP guard; do not log raw values.
