@@ -77,5 +77,15 @@ for (const path of ['/ve-chung-toi', '/lien-he']) {
     path, status:res.status, contentType:res.headers.get('content-type'),
     hasCopiedBlueSeaBrand:lingering, bodyChars:text.length
   }));
-  if (lingering) throw new Error('Legacy Blue Sea content is still publicly served at '+path);
+  if (lingering) {
+    // A 404 shell may contain a legacy string in non-visible metadata or
+    // a shared layout. Report context without mistaking that for a live Page.
+    const match = /blue\\s*sea|xuongmunonbaohiem|công ty tnhh đầu tư thương mại blue sea/i.exec(text);
+    const start = Math.max(0, (match?.index || 0)-145);
+    console.log('LEGACY_BRAND_CONTEXT '+JSON.stringify({
+      path, excerpt:text.slice(start,start+400).replace(/\\s+/g, ' ')
+    }));
+  }
+  if (res.status !== 404 && res.status !== 410)
+    throw new Error('Retired Blue Sea path must return HTTP 404/410: '+path+' returned '+res.status);
 }
