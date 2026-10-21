@@ -1,0 +1,42 @@
+name: NCKH Playwright teacher email admin staging smoke
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/nckh-playwright-email-admin-staging.yml'
+permissions:
+  contents: read
+concurrency:
+  group: nckh-playwright-teacher-mail-staging
+  cancel-in-progress: false
+jobs:
+  playwright-admin:
+    if: github.repository == 'ngocnhanvo/nghiencuukhoahoc-actions' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    env:
+      WP_ADMIN_USERNAME: ${{ secrets.WP_ADMIN_USERNAME }}
+      WP_ADMIN_PASSWORD: ${{ secrets.WP_ADMIN_PASSWORD }}
+    steps:
+      - name: Checkout EduResearch Actions only, no production repository
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install isolated headless Chromium test dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check 'playwright>=1.50,<2'
+          python -m playwright install --with-deps chromium
+      - name: Chromium UI verification of staging teacher email selector
+        shell: bash
+        run: |
+          set -euo pipefail
+          set +x
+          python scripts/nckh_playwright_email_admin_smoke.py
+          echo 'Playwright staging-only UI check completed; no screenshots or credentials uploaded.'
