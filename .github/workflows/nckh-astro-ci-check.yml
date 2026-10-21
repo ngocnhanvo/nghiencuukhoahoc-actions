@@ -42,6 +42,13 @@ jobs:
             exit 1
           fi
           printf 'Dependencies installed.\n\n' >> "$report"
+          if pnpm exec vitest run src/lib/wordpress/pages/nckhHomepageCache.test.ts > "${RUNNER_TEMP}/nckh-page-cache.log" 2>&1; then
+            printf 'NCKH cached-homepage isolation tests: **PASS**.\n' >> "$report"
+          else
+            printf 'NCKH cached-homepage isolation tests: **FAIL**.\n' >> "$report"
+            tail -n 48 "${RUNNER_TEMP}/nckh-page-cache.log" >> "$report"
+            exit 1
+          fi
           if pnpm exec astro check --js-only > "${RUNNER_TEMP}/check.log" 2>&1; then
             printf 'Astro JS check: **PASS**.\n' >> "$report"
           else
