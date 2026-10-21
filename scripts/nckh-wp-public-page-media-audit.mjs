@@ -47,3 +47,21 @@ for (const page of pages) {
 }
 console.log('AUDIT_COUNTS '+JSON.stringify({totalPublishedPages:pages.length,affectedPages:affected.length,affectedIds:affected.map(x=>x.id),knownMissing:knownMissing.size}));
 if (!pages.length) throw Error('No published Pages found: audit result is inconclusive');
+
+const menuResp = await fetch(base + '/wp-json/esc-api/v1/menus', {
+  headers: { Accept: 'application/json' }, signal: AbortSignal.timeout(15000)
+});
+if (!menuResp.ok) throw Error('WP header menu HTTP ' + menuResp.status);
+const menuPayload = await menuResp.json();
+const refs = [];
+const visit = (x, path = 'root', depth = 0) => {
+  if (depth > 10 || refs.length > 100) return;
+  if (Array.isArray(x)) { x.forEach((v, i) => visit(v, path + '/' + i, depth + 1)); return; }
+  if (!x || typeof x !== 'object') return;
+  const parts = [x.label, x.title, x.slug, x.url, x.href, x.link].map(v=>typeof v==='string'?v:'').filter(Boolean);
+  if (parts.length && (parts.some(v => /ve-chung-toi|lien-he|liên hệ|giới thiệu|blue sea|mũ bảo hiểm/i.test(v))
+      || ((x.key === 'about' || x.key === 'contact')))) refs.push({path, key:x.key||'', label:parts.slice(0,3), id:x.id||null});
+  Object.entries(x).forEach(([k, v])=>{ if (!['label','title','content','description','url','href','link','css'].includes(k)) visit(v, path + '/' + k, depth + 1); });
+};
+visit(menuPayload);
+console.log('MENU_AUDIT ' + JSON.stringify({topLevelKeys:Object.keys(menuPayload||{}),references:refs}));
