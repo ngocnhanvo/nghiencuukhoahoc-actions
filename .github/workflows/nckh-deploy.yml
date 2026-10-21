@@ -112,6 +112,10 @@ jobs:
           # its strict staging redirect allowlist and HTML transition tests.
           node scripts/generate-sitemap-robots.mjs --check
           pnpm exec vitest run src/lib/nckh/authNavigation.test.ts src/lib/nckh/homeNavigation.test.ts src/astro/components/Layout/Header.research-layout.test.ts src/lib/nckh/publicBrand.test.ts src/lib/nckh/appDesignConsistency.test.ts src/lib/nckh/pageLoading.test.ts scripts/sync-seo-files.nckh.test.ts scripts/generate-sitemap-robots.test.ts
+          # Test the guarded staging defaults first, then opt in to
+          # production crawler policy for this owner-approved master release.
+          export NCKH_RELEASE_CHANNEL=production
+          echo 'NCKH_RELEASE_CHANNEL=production' >> "$GITHUB_ENV"
           pnpm run build-git
           node --check dist/server/entry.mjs
           test -s dist/client/index.html
@@ -223,10 +227,10 @@ jobs:
 
           robots = published["robots.txt"].decode("utf8")
           lines = {x.strip() for x in robots.splitlines()}
-          if ("User-agent: *" not in lines or "Disallow: /" not in lines
+          if ("User-agent: *" not in lines
               or "Sitemap: " + origin + "/sitemap.xml" not in lines
-              or any(x.lower().startswith("allow:") for x in lines)):
-              raise RuntimeError("WordPress robots attempted to open staging indexing")
+              or "Disallow: /" in lines):
+              raise RuntimeError("WordPress robots violates production crawler policy")
           llms = published["llms.txt"].decode("utf8")
           if not llms.lstrip().startswith("# ") or "](" + origin + "/" not in llms:
               raise RuntimeError("WordPress llms.txt lacks canonical Markdown links")
