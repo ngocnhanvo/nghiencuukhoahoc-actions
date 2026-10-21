@@ -7,6 +7,27 @@ permissions:
   contents: read
   issues: write
 jobs:
+  audit-wordpress-pages:
+    # Read-only WP metadata audit on explicit, allowlisted audit request.
+    if: >-
+      github.repository == 'ngocnhanvo/nghiencuukhoahoc-actions'
+      && github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run read-only WordPress legacy Pages and media audit when requested
+        shell: bash
+        run: |
+          set -euo pipefail
+          task="$(node -p "JSON.parse(require('fs').readFileSync('docs/nckh-workflow-request.json','utf8')).task")"
+          if [ "$task" = 'wp-pages-media-readonly' ]; then
+            node scripts/nckh-wp-public-page-media-audit.mjs
+          else
+            echo "Read-only Pages audit not requested; no WordPress access."
+          fi
   check:
     if: >-
       github.repository == 'ngocnhanvo/nghiencuukhoahoc-actions'
