@@ -1,4 +1,4 @@
 {
-  "task": "wp-pages-media-readonly",
-  "request_id": "nckh_broken_wp_pages_media_audit_20261021"
+  "task": "astro-public-cache-ci",
+  "request_id": "nckh_strict_missing_image_regression_check_20261021_01"
 }
