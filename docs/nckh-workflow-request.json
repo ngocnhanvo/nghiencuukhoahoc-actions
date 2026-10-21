@@ -1,4 +1,4 @@
 {
-  "task": "wp-pages-media-readonly",
-  "request_id": "nckh_menu_and_legacy_pages_readonly_20261021"
+  "task": "wp-legacy-precheck",
+  "request_id": "nckh_legacy_blue_sea_wp_preflight_20261021"
 }
