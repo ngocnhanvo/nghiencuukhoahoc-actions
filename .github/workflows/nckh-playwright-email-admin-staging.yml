@@ -1,10 +1,11 @@
-name: NCKH Playwright teacher email admin staging smoke
+name: NCKH Playwright NCKH admin modules staging smoke
 on:
   workflow_dispatch:
   push:
     branches: [main]
     paths:
       - '.github/workflows/nckh-playwright-email-admin-staging.yml'
+      - 'scripts/nckh_playwright_email_admin_smoke.py'
 permissions:
   contents: read
 concurrency:
@@ -33,7 +34,7 @@ jobs:
           set -euo pipefail
           python -m pip install --disable-pip-version-check 'playwright>=1.50,<2'
           python -m playwright install --with-deps chromium
-      - name: Chromium UI verification of staging teacher email selector
+      - name: Chromium admin QA for NCKH Email, Rubric, Files and Teacher permissions
         shell: bash
         run: |
           set -euo pipefail
