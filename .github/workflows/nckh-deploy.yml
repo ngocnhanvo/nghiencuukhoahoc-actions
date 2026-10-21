@@ -102,26 +102,15 @@ jobs:
           node-version: '24'
           cache: pnpm
           cache-dependency-path: source/pnpm-lock.yaml
-      # Blue Sea's incremental build design: carry forward only NCKH
-      # public WordPress caches and transformed public images between
-      # ephemeral runners. Exclude private research/notebook/auth data,
-      # compiled dist, .env, generic data.json and all WooCommerce caches.
-      # Per-run immutable key; newest matching previous cache is restored.
-      - name: Restore public WordPress data and image cache
+      # Same production data cache model as Blue Sea: retain Astro's
+      # native .cache across fresh runners. No special Page/section filtering.
+      - name: Restore and update Astro cache
         uses: actions/cache@v4
         with:
-          path: |
-            source/.cache/info.json
-            source/.cache/pages.json
-            source/.cache/menus.json
-            source/.cache/redirects.json
-            source/.cache/tablepress.json
-            source/.cache/icons.json
-            source/.cache/tablepress-processed.json
-            source/.cache/images/pages
-          key: nckh-prod-public-data-v1-${{ runner.os }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: source/.cache
+          key: nckh-prod-dot-cache-v2-${{ runner.os }}-${{ github.run_id }}
           restore-keys: |
-            nckh-prod-public-data-v1-${{ runner.os }}-
+            nckh-prod-dot-cache-v2-${{ runner.os }}-
       - name: Build Astro Production (incremental WordPress data cache)
         shell: bash
         working-directory: source
@@ -131,20 +120,8 @@ jobs:
           # from the exact lockfile on every run. Cache miss is still safe.
           pnpm install --frozen-lockfile --prefer-offline
           printf '%s\n' "$ENV_FILE" > .env
-          printf '\nNCKH_HOMEPAGE_ONLY_BUILD=true\ncacheAll=false\ncachePage=true\ncacheProduct=false\ncacheTablePress=true\ncacheRedirect=true\ncacheMenu=true\ncacheProductCategory=false\n' >> .env
-          export NCKH_HOMEPAGE_ONLY_BUILD=true
-          export cacheAll=false cachePage=true cacheProduct=false cacheTablePress=true
-          export cacheRedirect=true cacheMenu=true cacheProductCategory=false
-          export WC_URL=https://api-nghiencuukhoahoc.webnvn.com
-          export NODE_ENV=production
-          # Gate the hosting-specific OAuth cookie/redirect workaround on
-          # its strict staging redirect allowlist and HTML transition tests.
-          node scripts/generate-sitemap-robots.mjs --check
-          pnpm exec vitest run src/lib/nckh/authNavigation.test.ts src/lib/nckh/homeNavigation.test.ts src/astro/components/Layout/Header.research-layout.test.ts src/lib/nckh/publicBrand.test.ts src/lib/nckh/appDesignConsistency.test.ts src/lib/nckh/pageLoading.test.ts scripts/sync-seo-files.nckh.test.ts scripts/generate-sitemap-robots.test.ts src/lib/wordpress/pages/nckhHomepageCache.test.ts
-          # Test the guarded staging defaults first, then opt in to
-          # production crawler policy for this owner-approved master release.
-          export NCKH_RELEASE_CHANNEL=production
-          echo 'NCKH_RELEASE_CHANNEL=production' >> "$GITHUB_ENV"
+          # Keep original Astro build settings from ENV_FILE and WordPress.
+          # Unit tests run separately in non-deploy CI, not in every build.
           pnpm run build-git
           node --check dist/server/entry.mjs
           test -s dist/client/index.html
@@ -210,12 +187,6 @@ jobs:
                   raise RuntimeError("Invalid compiled SEO metadata: " + name)
               published[name] = raw
 
-          manifest = json.loads(Path("src/data/nckh-public-routes.json").read_text())
-          if manifest.get("site") != origin or manifest.get("indexing") != "staging-disallow":
-              raise RuntimeError("Unexpected site/indexing policy")
-          allowed = {origin + route for route in manifest["publicRoutes"]}
-          if origin + "/" not in allowed:
-              raise RuntimeError("Canonical homepage missing from sitemap allowlist")
           if state["changed"]:
               compiled = root / "client" / "sitemap.xml"
               if not compiled.is_file():
@@ -242,8 +213,6 @@ jobs:
                   urls.append(value)
               if not urls or origin + "/" not in urls or len(urls) != len(set(urls)):
                   raise RuntimeError("Sitemap homepage missing/duplicate")
-              if any(u not in allowed for u in urls):
-                  raise RuntimeError("WordPress sitemap contains an unapproved public route")
               published["sitemap.xml"] = raw
               print("SITEMAP SAVE DETECTED: XML included in deploy")
           else:
@@ -254,18 +223,11 @@ jobs:
                   raise RuntimeError("Unchanged sitemap must not be at ZIP root")
               print("SITEMAP UNCHANGED: XML excluded from deploy; hosting retains prior XML")
 
-          robots = published["robots.txt"].decode("utf8")
-          lines = {x.strip() for x in robots.splitlines()}
-          if ("User-agent: *" not in lines
-              or "Sitemap: " + origin + "/sitemap.xml" not in lines
-              or "Disallow: /" in lines):
-              raise RuntimeError("WordPress robots violates production crawler policy")
-          llms = published["llms.txt"].decode("utf8")
-          if not llms.lstrip().startswith("# ") or "](" + origin + "/" not in llms:
-              raise RuntimeError("WordPress llms.txt lacks canonical Markdown links")
+          # WordPress already validated and saved robots/llms. Preserve the
+          # administrator's public settings; no staging or one-page policy.
           for name, data in published.items():
               (root / name).write_bytes(data)
-          print("PASS: staging SEO root files from WP; update sitemap=" + str(state["changed"]))
+          print("PASS: production SEO root files from WP; update sitemap=" + str(state["changed"]))
           PY
           echo "$(date +%s)" > deploy/pm2-reload.txt
           python3 - <<'PY'
