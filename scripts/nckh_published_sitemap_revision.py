@@ -43,9 +43,15 @@ def main():
             if buffer.tell() > 4096:
                 raise RuntimeError("Unexpectedly large public deployment metadata")
             metadata = json.loads(buffer.getvalue())
-            if metadata.get("branch") != "github" or \
+            source_branch = os.environ.get("NCKH_DEPLOY_SOURCE_BRANCH", "github")
+            if source_branch not in ("github", "master"):
+                raise RuntimeError("Unexpected NCKH deploy branch")
+            # First production deployment may follow a verified development
+            # release, while subsequent production deployments use master.
+            permitted = ("github", "master") if source_branch == "master" else ("github",)
+            if metadata.get("branch") not in permitted or \
                     metadata.get("target") != "nghiencuukhoahoc.webnvn.com":
-                raise RuntimeError("Staging marker points to an unexpected source/host")
+                raise RuntimeError("NCKH deployed marker source/host mismatch")
             previous = metadata.get("sitemap_revision") or "missing"
             if previous != "missing" and previous != "legacy" and \
                     re.fullmatch(r"[a-f0-9-]{36}", str(previous)) is None:
