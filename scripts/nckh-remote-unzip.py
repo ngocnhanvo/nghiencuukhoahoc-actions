@@ -137,19 +137,25 @@ def main():
         raise ValueError("No Astro deployment ZIP exists")
     # Archived recovery ZIPs from a previous domain must not be deployed to a new domain.
     with ZipFile(archive) as zf:
-        if os.environ.get("NCKH_STAGING_SOURCE") == "github":
-            # New staging-only artifact protocol: never package .env or secrets.
-            # The existing master/prod workflow keeps its prior checks unchanged.
+        staging = os.environ.get("NCKH_STAGING_SOURCE") == "github"
+        production = os.environ.get("NCKH_PRODUCTION_SOURCE") == "master"
+        if staging and production:
+            raise ValueError("Ambiguous NCKH deployment source")
+        if staging or production:
+            # Both modern deployment paths are credential-free signed ZIPs.
+            # The marker name remains compatible with the existing PHP
+            # atomic activation and sitemap revision hand-off protocol.
             if ".env" in zf.namelist():
-                raise ValueError("Refusing staging archive containing public-root .env")
+                raise ValueError("Refusing NCKH deploy archive containing public-root .env")
             manifest = json.loads(zf.read("nckh-staging-build.json").decode("utf-8"))
-            commit = os.environ.get("NCKH_STAGING_COMMIT", "")
-            if (manifest.get("branch") != "github"
+            expected_branch = "master" if production else "github"
+            commit = os.environ.get("NCKH_DEPLOY_COMMIT" if production else "NCKH_STAGING_COMMIT", "")
+            if (manifest.get("branch") != expected_branch
                     or manifest.get("commit") != commit
                     or not re.fullmatch(r"[0-9a-f]{40}", commit)
                     or manifest.get("target") != "nghiencuukhoahoc.webnvn.com"
                     or ftp_target != "/domains/nghiencuukhoahoc.webnvn.com/public_html/"):
-                raise ValueError("Unsigned or mismatched staging source provenance")
+                raise ValueError("Unsigned or mismatched NCKH source provenance")
         else:
             packaged_env = zf.read(".env").decode("utf-8")
             packaged_url = env_value(packaged_env, "WC_URL_CLIENT")
