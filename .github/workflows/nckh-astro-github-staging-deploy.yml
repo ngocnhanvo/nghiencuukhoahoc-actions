@@ -139,65 +139,97 @@ jobs:
 
           root = Path("deploy")
           origin = "https://nghiencuukhoahoc.webnvn.com"
-          # The existing Astro build already fetched and validated WP REST SEO
-          # settings. Publish the *compiled WordPress bytes*, not public/
-          # template bytes that would silently overwrite admin changes.
-          files = {}
-          for name in ("llms.txt", "robots.txt", "sitemap.xml"):
+          state_file = root / "client" / ".nckh-sitemap-deploy-state.json"
+          if not state_file.is_file():
+              raise RuntimeError("Missing signed-build sitemap Save revision decision")
+          state = json.loads(state_file.read_text())
+          if state.get("origin") != origin or not isinstance(state.get("changed"), bool):
+              raise RuntimeError("Unexpected sitemap deploy decision")
+          rev = state.get("revision")
+          import re
+          if not isinstance(rev, str) or re.fullmatch(r"(?:legacy|[a-f0-9-]{36})", rev) is None:
+              raise RuntimeError("Unexpected sitemap Save revision")
+          # Workflow-local metadata (not uploaded publicly except safe revision
+          # token in the existing nckh-staging-build.json).
+          Path(".nckh-sitemap-package-state.json").write_text(json.dumps(state))
+          state_file.unlink()
+          published = {}
+          for name in ("llms.txt", "robots.txt"):
               compiled = root / "client" / name
               if not compiled.is_file():
-                  raise RuntimeError("Missing compiled WordPress SEO metadata: " + name)
+                  raise RuntimeError("Missing WordPress SEO metadata: " + name)
               raw = compiled.read_bytes()
               if not raw or b"nghiencuukhoahoc.id.vn" in raw or b"xuongmunonbaohiem" in raw:
                   raise RuntimeError("Invalid compiled SEO metadata: " + name)
-              files[name] = raw
+              published[name] = raw
 
           manifest = json.loads(Path("src/data/nckh-public-routes.json").read_text())
           if manifest.get("site") != origin or manifest.get("indexing") != "staging-disallow":
-              raise RuntimeError("Unexpected site or robots policy for NCKH staging")
+              raise RuntimeError("Unexpected site/indexing policy")
           allowed = {origin + route for route in manifest["publicRoutes"]}
           if origin + "/" not in allowed:
-              raise RuntimeError("Sitemap manifest excludes canonical homepage")
-          try:
-              xmlroot = ET.fromstring(files["sitemap.xml"])
-          except ET.ParseError as e:
-              raise RuntimeError("Invalid compiled XML: " + str(e))
-          ns = "{http://www.sitemaps.org/schemas/sitemap/0.9}"
-          if xmlroot.tag != ns + "urlset":
-              raise RuntimeError("Invalid sitemap XML namespace/root")
-          urls = []
-          for url in xmlroot.findall(ns + "url"):
-              loc = url.find(ns + "loc")
-              if loc is None or not loc.text:
-                  raise RuntimeError("Missing sitemap URL")
-              p = urlsplit(loc.text.strip())
-              if p.scheme != "https" or p.netloc != "nghiencuukhoahoc.webnvn.com" or p.query or p.fragment:
-                  raise RuntimeError("Invalid sitemap URL origin")
-              urls.append(loc.text.strip())
-          if not urls or origin + "/" not in urls or len(urls) != len(set(urls)):
-              raise RuntimeError("Empty, duplicate or missing homepage sitemap URLs")
-          if any(url not in allowed for url in urls):
-              raise RuntimeError("WordPress sitemap contains a non-approved public route")
-          robots = files["robots.txt"].decode("utf8")
-          lines = {line.strip() for line in robots.splitlines()}
-          if "User-agent: *" not in lines or "Disallow: /" not in lines or \
-                  "Sitemap: " + origin + "/sitemap.xml" not in lines or \
-                  any(line.lower().startswith("allow:") for line in lines):
+              raise RuntimeError("Canonical homepage missing from sitemap allowlist")
+          if state["changed"]:
+              compiled = root / "client" / "sitemap.xml"
+              if not compiled.is_file():
+                  raise RuntimeError("Saved sitemap XML missing from build")
+              raw = compiled.read_bytes()
+              if b"nghiencuukhoahoc.id.vn" in raw or b"xuongmunonbaohiem" in raw:
+                  raise RuntimeError("Sitemap refers to another project")
+              try:
+                  xmlroot = ET.fromstring(raw)
+              except ET.ParseError as e:
+                  raise RuntimeError("Invalid WordPress XML: " + str(e))
+              ns = "{http://www.sitemaps.org/schemas/sitemap/0.9}"
+              if xmlroot.tag != ns + "urlset":
+                  raise RuntimeError("Invalid sitemap namespace")
+              urls = []
+              for item in xmlroot.findall(ns + "url"):
+                  loc = item.find(ns + "loc")
+                  if loc is None or not loc.text:
+                      raise RuntimeError("Missing sitemap loc")
+                  value = loc.text.strip()
+                  p = urlsplit(value)
+                  if p.scheme != "https" or p.netloc != "nghiencuukhoahoc.webnvn.com" or p.query or p.fragment:
+                      raise RuntimeError("Sitemap loc uses unsafe origin")
+                  urls.append(value)
+              if not urls or origin + "/" not in urls or len(urls) != len(set(urls)):
+                  raise RuntimeError("Sitemap homepage missing/duplicate")
+              if any(u not in allowed for u in urls):
+                  raise RuntimeError("WordPress sitemap contains an unapproved public route")
+              published["sitemap.xml"] = raw
+              print("SITEMAP SAVE DETECTED: XML included in deploy")
+          else:
+              # The signed PHP activator copies the unchanged public file
+              # locally into the new client directory. Do not send XML.
+              (root / "client" / "sitemap.xml").unlink(missing_ok=True)
+              if (root / "sitemap.xml").exists():
+                  raise RuntimeError("Unchanged sitemap must not be at ZIP root")
+              print("SITEMAP UNCHANGED: XML excluded from deploy; hosting retains prior XML")
+
+          robots = published["robots.txt"].decode("utf8")
+          lines = {x.strip() for x in robots.splitlines()}
+          if ("User-agent: *" not in lines or "Disallow: /" not in lines
+              or "Sitemap: " + origin + "/sitemap.xml" not in lines
+              or any(x.lower().startswith("allow:") for x in lines)):
               raise RuntimeError("WordPress robots attempted to open staging indexing")
-          llms = files["llms.txt"].decode("utf8")
+          llms = published["llms.txt"].decode("utf8")
           if not llms.lstrip().startswith("# ") or "](" + origin + "/" not in llms:
-              raise RuntimeError("WordPress llms.txt lacks verified public-site references")
-          for name, raw in files.items():
-              (root / name).write_bytes(raw)
-          print("PASS: WordPress SEO Files published to staging Apache root: "
-                + ", ".join(files) + "; sitemap allowed URL count=" + str(len(urls)))
+              raise RuntimeError("WordPress llms.txt lacks canonical Markdown links")
+          for name, data in published.items():
+              (root / name).write_bytes(data)
+          print("PASS: staging SEO root files from WP; update sitemap=" + str(state["changed"]))
           PY
           echo "$(date +%s)" > deploy/pm2-reload.txt
           python3 - <<'PY'
           import json,os
           sha=os.environ['NCKH_STAGING_COMMIT']
+          state=json.load(open('.nckh-sitemap-package-state.json',encoding='utf8'))
           with open('deploy/nckh-staging-build.json','w',encoding='utf8') as handle:
-              json.dump({'branch':'github','commit':sha,'target':'nghiencuukhoahoc.webnvn.com'},handle)
+              json.dump({
+                  'branch':'github','commit':sha,'target':'nghiencuukhoahoc.webnvn.com',
+                  'sitemap_revision':state['revision'],
+              },handle)
           PY
           test ! -e deploy/.env
           test -s deploy/server/entry.mjs
@@ -214,11 +246,21 @@ jobs:
               # No flattened client output must reappear at root.
               if any(name in names for name in ('index.html','so-tay/index.html','xem-truoc/index.html','_astro/')):
                   raise RuntimeError('Duplicate application assets outside client/ are forbidden')
-              for static in ('llms.txt','robots.txt','sitemap.xml'):
+              state=json.load(open('.nckh-sitemap-package-state.json',encoding='utf8'))
+              for static in ('llms.txt','robots.txt'):
                   if static not in names or ('client/' + static) not in names:
-                      raise RuntimeError('Missing root and client public metadata: ' + static)
+                      raise RuntimeError('Missing WordPress metadata: ' + static)
                   if z.read(static) != z.read('client/' + static):
-                      raise RuntimeError('Public metadata copy differs from compiled client: ' + static)
+                      raise RuntimeError('Metadata copies differ: ' + static)
+              present='sitemap.xml' in names and 'client/sitemap.xml' in names
+              absent='sitemap.xml' not in names and 'client/sitemap.xml' not in names
+              if state['changed'] and (not present or z.read('sitemap.xml')!=z.read('client/sitemap.xml')):
+                  raise RuntimeError('Saved sitemap missing or mismatched in archive')
+              if not state['changed'] and not absent:
+                  raise RuntimeError('Unchanged sitemap XML must be excluded from archive')
+              meta=json.loads(z.read('nckh-staging-build.json'))
+              if meta.get('sitemap_revision')!=state['revision']:
+                  raise RuntimeError('Archive revision marker mismatch')
               for required in ('server/entry.mjs','client/index.html','nckh-staging-build.json'):
                   if required not in names:raise RuntimeError('Missing staged bundle file: '+required)
           print('PASS: ZIP contains dev server/client and provenance, no private environment file.')
