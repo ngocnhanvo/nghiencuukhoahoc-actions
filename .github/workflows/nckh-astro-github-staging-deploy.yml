@@ -75,6 +75,13 @@ jobs:
           set -euo pipefail
           python3 -m py_compile actions-hub/scripts/nckh-remote-unzip.py
           python3 actions-hub/scripts/nckh-remote-unzip.py verify
+      - name: Read deployed sitemap Save token from NCKH FTPS (no XML transfer)
+        shell: bash
+        run: |
+          set -euo pipefail
+          set +x
+          python3 -m py_compile actions-hub/scripts/nckh_published_sitemap_revision.py
+          python3 actions-hub/scripts/nckh_published_sitemap_revision.py
       - name: Install and build Astro github (no OAuth credentials in build)
         uses: actions/setup-node@v4
         with:
