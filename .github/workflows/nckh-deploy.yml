@@ -102,7 +102,27 @@ jobs:
           node-version: '24'
           cache: pnpm
           cache-dependency-path: source/pnpm-lock.yaml
-      - name: Build server and client for staging
+      # Blue Sea's incremental build design: carry forward only NCKH
+      # public WordPress caches and transformed public images between
+      # ephemeral runners. Exclude private research/notebook/auth data,
+      # compiled dist, .env, generic data.json and all WooCommerce caches.
+      # Per-run immutable key; newest matching previous cache is restored.
+      - name: Restore public WordPress data and image cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            source/.cache/info.json
+            source/.cache/pages.json
+            source/.cache/menus.json
+            source/.cache/redirects.json
+            source/.cache/tablepress.json
+            source/.cache/icons.json
+            source/.cache/tablepress-processed.json
+            source/.cache/images/pages
+          key: nckh-prod-public-data-v1-${{ runner.os }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            nckh-prod-public-data-v1-${{ runner.os }}-
+      - name: Build Astro Production (incremental WordPress data cache)
         shell: bash
         working-directory: source
         run: |
@@ -111,16 +131,16 @@ jobs:
           # from the exact lockfile on every run. Cache miss is still safe.
           pnpm install --frozen-lockfile --prefer-offline
           printf '%s\n' "$ENV_FILE" > .env
-          printf '\nNCKH_HOMEPAGE_ONLY_BUILD=true\ncacheAll=false\ncachePage=false\ncacheProduct=false\ncacheTablePress=false\ncacheRedirect=false\ncacheMenu=false\ncacheProductCategory=false\n' >> .env
+          printf '\nNCKH_HOMEPAGE_ONLY_BUILD=true\ncacheAll=false\ncachePage=true\ncacheProduct=false\ncacheTablePress=true\ncacheRedirect=true\ncacheMenu=true\ncacheProductCategory=false\n' >> .env
           export NCKH_HOMEPAGE_ONLY_BUILD=true
-          export cacheAll=false cachePage=false cacheProduct=false cacheTablePress=false
-          export cacheRedirect=false cacheMenu=false cacheProductCategory=false
+          export cacheAll=false cachePage=true cacheProduct=false cacheTablePress=true
+          export cacheRedirect=true cacheMenu=true cacheProductCategory=false
           export WC_URL=https://api-nghiencuukhoahoc.webnvn.com
           export NODE_ENV=production
           # Gate the hosting-specific OAuth cookie/redirect workaround on
           # its strict staging redirect allowlist and HTML transition tests.
           node scripts/generate-sitemap-robots.mjs --check
-          pnpm exec vitest run src/lib/nckh/authNavigation.test.ts src/lib/nckh/homeNavigation.test.ts src/astro/components/Layout/Header.research-layout.test.ts src/lib/nckh/publicBrand.test.ts src/lib/nckh/appDesignConsistency.test.ts src/lib/nckh/pageLoading.test.ts scripts/sync-seo-files.nckh.test.ts scripts/generate-sitemap-robots.test.ts
+          pnpm exec vitest run src/lib/nckh/authNavigation.test.ts src/lib/nckh/homeNavigation.test.ts src/astro/components/Layout/Header.research-layout.test.ts src/lib/nckh/publicBrand.test.ts src/lib/nckh/appDesignConsistency.test.ts src/lib/nckh/pageLoading.test.ts scripts/sync-seo-files.nckh.test.ts scripts/generate-sitemap-robots.test.ts src/lib/wordpress/pages/nckhHomepageCache.test.ts
           # Test the guarded staging defaults first, then opt in to
           # production crawler policy for this owner-approved master release.
           export NCKH_RELEASE_CHANNEL=production
