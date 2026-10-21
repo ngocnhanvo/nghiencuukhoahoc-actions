@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Read-only post-deploy Lighthouse regression checks in real mobile Chromium."""
 import re
+import json
+import xml.etree.ElementTree as ET
 
 from playwright.sync_api import sync_playwright
 
@@ -41,6 +43,13 @@ def main():
         response = page.goto(ORIGIN + "/?nckh_qa=lighthouse_20261021", wait_until="domcontentloaded", timeout=60000)
         assert response and response.status == 200, f"Homepage HTTP {response.status if response else 'none'}"
         page.wait_for_selector(".nd-document-body", timeout=25000)
+        canonical = page.locator('link[rel="canonical"]').first.get_attribute("href")
+        assert canonical == ORIGIN + "/", f"Homepage canonical differs from sitemap: {canonical}"
+        og_url = page.locator('meta[property="og:url"]').first.get_attribute("content")
+        assert og_url == ORIGIN + "/", f"Homepage og:url differs from sitemap: {og_url}"
+        for raw_schema in page.locator('script[type="application/ld+json"]').all_text_contents():
+            assert "nghiencuukhoahoc.id.vn" not in raw_schema, "Legacy origin remains in public JSON-LD"
+        print("POST-DEPLOY canonical, og:url and JSON-LD use approved origin")
         for label, selector, bg in checks:
             element = page.locator(selector).first
             assert element.count() == 1, f"Missing {label} on live page"
@@ -74,8 +83,14 @@ def main():
                     if "Disallow: /" not in body or ORIGIN + "/sitemap.xml" not in body:
                         problems.append("robots.txt old sitemap/unsafe robots policy")
                 elif name == "sitemap.xml":
-                    if "<loc>" + ORIGIN + "/</loc>" not in body:
-                        problems.append("sitemap.xml lacks canonical homepage")
+                    try:
+                        root = ET.fromstring(body)
+                        ns = "{http://www.sitemaps.org/schemas/sitemap/0.9}"
+                        urls = [loc.text for loc in root.findall(f"{ns}url/{ns}loc")]
+                        if urls != [ORIGIN + "/"]:
+                            problems.append(f"Unapproved sitemap URL list: {urls}")
+                    except ET.ParseError:
+                        problems.append("sitemap.xml is invalid XML")
         assert not problems, "Static file URLs failed: " + "; ".join(problems)
         print("PASS: live staging mobile Chromium accessibility and llms.txt/sitemap/robots smoke.")
         print("READ ONLY: no WordPress writes, no authentication, no FTP, no master merge.")
