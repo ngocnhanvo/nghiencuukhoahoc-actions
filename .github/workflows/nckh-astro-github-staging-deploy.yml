@@ -132,27 +132,65 @@ jobs:
           # Whitelist ONLY the public, content-checked metadata; never flatten
           # HTML, _astro assets, application data or private runtime files.
           python3 - <<'PY'
+          import json
           from pathlib import Path
+          from urllib.parse import urlsplit
+          import xml.etree.ElementTree as ET
+
           root = Path("deploy")
+          origin = "https://nghiencuukhoahoc.webnvn.com"
+          # The existing Astro build already fetched and validated WP REST SEO
+          # settings. Publish the *compiled WordPress bytes*, not public/
+          # template bytes that would silently overwrite admin changes.
+          files = {}
           for name in ("llms.txt", "robots.txt", "sitemap.xml"):
-              source = Path("public") / name
               compiled = root / "client" / name
-              if not source.is_file() or not compiled.is_file():
-                  raise RuntimeError("Missing canonical static file: " + name)
-              raw = source.read_bytes()
-              if not raw or raw != compiled.read_bytes():
-                  raise RuntimeError("Compiled static content does not match source: " + name)
-              if b"nghiencuukhoahoc.id.vn" in raw or b"xuongmunonbaohiem" in raw:
-                  raise RuntimeError("Retired origin in static file: " + name)
-              if name == "llms.txt" and (not raw.startswith(b"# ") or
-                  raw.count(b"](https://nghiencuukhoahoc.webnvn.com/") < 2):
-                  raise RuntimeError("llms.txt lacks canonical Markdown links")
-              if name == "robots.txt" and (b"Disallow: /" not in raw or b"Allow: /" in raw):
-                  raise RuntimeError("Staging must retain robots disallow")
-              if name == "sitemap.xml" and b"https://nghiencuukhoahoc.webnvn.com/" not in raw:
-                  raise RuntimeError("Sitemap canonical origin missing")
+              if not compiled.is_file():
+                  raise RuntimeError("Missing compiled WordPress SEO metadata: " + name)
+              raw = compiled.read_bytes()
+              if not raw or b"nghiencuukhoahoc.id.vn" in raw or b"xuongmunonbaohiem" in raw:
+                  raise RuntimeError("Invalid compiled SEO metadata: " + name)
+              files[name] = raw
+
+          manifest = json.loads(Path("src/data/nckh-public-routes.json").read_text())
+          if manifest.get("site") != origin or manifest.get("indexing") != "staging-disallow":
+              raise RuntimeError("Unexpected site or robots policy for NCKH staging")
+          allowed = {origin + route for route in manifest["publicRoutes"]}
+          if origin + "/" not in allowed:
+              raise RuntimeError("Sitemap manifest excludes canonical homepage")
+          try:
+              xmlroot = ET.fromstring(files["sitemap.xml"])
+          except ET.ParseError as e:
+              raise RuntimeError("Invalid compiled XML: " + str(e))
+          ns = "{http://www.sitemaps.org/schemas/sitemap/0.9}"
+          if xmlroot.tag != ns + "urlset":
+              raise RuntimeError("Invalid sitemap XML namespace/root")
+          urls = []
+          for url in xmlroot.findall(ns + "url"):
+              loc = url.find(ns + "loc")
+              if loc is None or not loc.text:
+                  raise RuntimeError("Missing sitemap URL")
+              p = urlsplit(loc.text.strip())
+              if p.scheme != "https" or p.netloc != "nghiencuukhoahoc.webnvn.com" or p.query or p.fragment:
+                  raise RuntimeError("Invalid sitemap URL origin")
+              urls.append(loc.text.strip())
+          if not urls or origin + "/" not in urls or len(urls) != len(set(urls)):
+              raise RuntimeError("Empty, duplicate or missing homepage sitemap URLs")
+          if any(url not in allowed for url in urls):
+              raise RuntimeError("WordPress sitemap contains a non-approved public route")
+          robots = files["robots.txt"].decode("utf8")
+          lines = {line.strip() for line in robots.splitlines()}
+          if "User-agent: *" not in lines or "Disallow: /" not in lines or \
+                  "Sitemap: " + origin + "/sitemap.xml" not in lines or \
+                  any(line.lower().startswith("allow:") for line in lines):
+              raise RuntimeError("WordPress robots attempted to open staging indexing")
+          llms = files["llms.txt"].decode("utf8")
+          if not llms.lstrip().startswith("# ") or "](" + origin + "/" not in llms:
+              raise RuntimeError("WordPress llms.txt lacks verified public-site references")
+          for name, raw in files.items():
               (root / name).write_bytes(raw)
-          print("PASS: Only llms.txt/robots.txt/sitemap.xml copied into Apache document-root.")
+          print("PASS: WordPress SEO Files published to staging Apache root: "
+                + ", ".join(files) + "; sitemap allowed URL count=" + str(len(urls)))
           PY
           echo "$(date +%s)" > deploy/pm2-reload.txt
           python3 - <<'PY'
