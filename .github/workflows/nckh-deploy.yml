@@ -3,6 +3,8 @@ on:
   repository_dispatch:
     types: [wp_trigger_build]
   workflow_dispatch:
+  issues:
+    types: [opened]
 permissions:
   contents: read
 concurrency:
@@ -17,7 +19,10 @@ jobs:
           || (github.event_name == 'repository_dispatch'
               && github.event.action == 'wp_trigger_build'
               && (github.event.client_payload.site_domain == 'nghiencuukhoahoc.webnvn.com'
-                  || github.event.client_payload.site_domain == 'nghiencuukhoahoc.id.vn')))
+                  || github.event.client_payload.site_domain == 'nghiencuukhoahoc.id.vn'))
+          || (github.event_name == 'issues'
+              && github.event.issue.user.login == 'ngocnhanvo'
+              && github.event.issue.title == '[nckh] Deploy Astro master to production'))
     runs-on: ubuntu-latest
     timeout-minutes: 45
     env:
@@ -248,6 +253,7 @@ jobs:
           cd ..
           python3 - <<'PY'
           import json
+          import os
           from zipfile import ZipFile
           with ZipFile('upload/nckh-astro.zip') as z:
               names=z.namelist()
